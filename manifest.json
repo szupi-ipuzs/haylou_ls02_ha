@@ -1,0 +1,15 @@
+{
+  "domain": "haylou_ls02",
+  "name": "Haylou LS02 Watch",
+  "codeowners": ["@szupi"],
+  "config_flow": true,
+  "documentation": "https://github.com/szupi/haylou_ls02_ha",
+  "requirements": [],
+  "version": "1.0.0",
+  "issue_tracker": "https://github.com/szupi/haylou_ls02_ha/issues",
+  "iot_class": "local_polling",
+  "platforms": ["device_tracker", "sensor"],
+  "disabled_by": null,
+  "is_built_in": false,
+  "integration_type": "hub"
+}

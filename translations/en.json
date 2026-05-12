@@ -1,0 +1,75 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Haylou LS02 Setup",
+        "description": "Choose how to add your Haylou watch",
+        "data": {
+          "discovery_method": "Discovery Method"
+        }
+      },
+      "scan": {
+        "title": "Select Haylou Watch",
+        "description": "Select a Haylou Smart Watch 2 from the list",
+        "data": {
+          "device": "Device"
+        }
+      },
+      "manual": {
+        "title": "Enter Device Address",
+        "description": "Enter the Bluetooth MAC address of your Haylou watch",
+        "data": {
+          "device_address": "Device Address (XX:XX:XX:XX:XX:XX)"
+        }
+      },
+      "name": {
+        "title": "Name Your Watch",
+        "description": "Give your Haylou watch a friendly name",
+        "data": {
+          "name": "Device Name"
+        }
+      }
+    },
+    "error": {
+      "invalid_address_format": "Invalid MAC address format. Use XX:XX:XX:XX:XX:XX",
+      "no_devices_found": "No Haylou Smart Watch 2 devices found",
+      "not_haylou_watch": "This device is not a Haylou watch"
+    },
+    "abort": {
+      "already_configured": "This device is already configured",
+      "no_devices_found": "No Haylou Smart Watch 2 devices found",
+      "not_haylou_watch": "This device is not a Haylou watch"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Haylou LS02 Options",
+        "description": "Configure Haylou watch integration options",
+        "data": {
+          "polling_interval": "Polling Interval (seconds)"
+        }
+      }
+    }
+  },
+  "services": {
+    "send_message": {
+      "name": "Send Message",
+      "description": "Send a message to the Haylou watch display",
+      "fields": {
+        "message": {
+          "name": "Message",
+          "description": "The message to send to the watch"
+        },
+        "message_type": {
+          "name": "Message Type",
+          "description": "Type of message (phone_call, whatsapp, email, etc.)"
+        }
+      }
+    },
+    "request_battery": {
+      "name": "Request Battery Status",
+      "description": "Request battery status from the watch"
+    }
+  }
+}

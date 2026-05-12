@@ -1,0 +1,46 @@
+send_message:
+  name: Send Message
+  description: Send a message to the Haylou watch display
+  fields:
+    message:
+      name: Message
+      description: The message text to send
+      required: true
+      selector:
+        text:
+          multiline: false
+    message_type:
+      name: Message Type
+      description: Type of alert message
+      required: false
+      default: generic
+      selector:
+        select:
+          options:
+            - "phone_call"
+            - "qq"
+            - "wechat"
+            - "generic"
+            - "facebook"
+            - "twitter"
+            - "whatsapp"
+            - "skype"
+            - "messenger"
+            - "hangouts"
+            - "line"
+            - "linkedin"
+            - "instagram"
+            - "viber"
+            - "kakaotalk"
+            - "vk"
+            - "snapchat"
+            - "googleplus"
+            - "email"
+            - "flickr"
+            - "tumblr"
+            - "pinterest"
+            - "youtube"
+
+request_battery:
+  name: Request Battery
+  description: Request battery status from the Haylou watch
