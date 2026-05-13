@@ -1,9 +1,9 @@
-"""Device tracker for Haylou LS02 watch connection state."""
+"""Diagnostic sensor for Haylou LS02 watch connection state."""
 
 import logging
 from typing import Any
 
-from homeassistant.components.device_tracker import TrackerEntity, SourceType
+from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
@@ -20,55 +20,38 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up device tracker for Haylou LS02."""
+    """Set up diagnostic sensor for Haylou LS02."""
     coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
     device_address = config_entry.data[CONF_DEVICE_ADDRESS]
     device_name = config_entry.data.get(CONF_NAME, "Haylou Watch")
 
-    entity = HaylouDeviceTracker(
+    entity = HaylouConnectionStateSensor(
         coordinator, device_address, device_name, config_entry
     )
     async_add_entities([entity])
 
 
-class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
-    """Represent a Haylou watch as a device tracker."""
+class HaylouConnectionStateSensor(CoordinatorEntity, SensorEntity):
+    """Represent Haylou watch connection state as a diagnostic sensor."""
 
-    _attr_icon = "mdi:watch"
-    _attr_source_type = SourceType.BLUETOOTH
+    _attr_icon = "mdi:bluetooth"
     _attr_should_poll = False
+    _attr_entity_category = "diagnostic"
 
     def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
-        """Initialize the device tracker."""
+        """Initialize the diagnostic sensor."""
         super().__init__(coordinator)
         self.device_address = device_address
         self.device_name = device_name
         self.config_entry = config_entry
-        self._attr_unique_id = f"{DOMAIN}_{device_address}_tracker"
-        self._attr_name = f"{device_name} Tracker"
-        self._attr_entity_id = f"device_tracker.haylou_ls02_{device_address.replace(':', '')}"
+        self._attr_unique_id = f"{DOMAIN}_{device_address}_connection_state"
+        self._attr_name = f"{device_name} Connection State"
+        self._attr_entity_id = f"sensor.haylou_ls02_connection_state_{device_address.replace(':', '')}"
 
     @property
-    def latitude(self) -> float | None:
-        """Return latitude."""
-        # Not available for BLE tracker; return None
-        return None
-
-    @property
-    def longitude(self) -> float | None:
-        """Return longitude."""
-        # Not available for BLE tracker; return None
-        return None
-
-    @property
-    def is_connected(self) -> bool:
-        """Return True if the device is connected."""
-        return self.coordinator.data.get("connection_state") == "connected"
-
-    async def async_added_to_hass(self) -> None:
-        """When entity is added to Home Assistant."""
-        await super().async_added_to_hass()
-        self._handle_coordinator_update()
+    def native_value(self) -> str:
+        """Return the connection state."""
+        return self.coordinator.data.get("connection_state", "disconnected")
 
     @property
     def device_info(self) -> dict[str, Any]:
@@ -79,6 +62,11 @@ class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
             "manufacturer": MANUFACTURER,
             "model": MODEL,
         }
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to Home Assistant."""
+        await super().async_added_to_hass()
+        self._handle_coordinator_update()
 
     @callback
     def _handle_coordinator_update(self) -> None:

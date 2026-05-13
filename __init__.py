@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import timedelta
-from typing import Final
+from typing import Final, Optional
 
 from homeassistant.components.bluetooth import BluetoothServiceInfo, async_last_service_info
 from homeassistant.config_entries import ConfigEntry
@@ -45,11 +45,13 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         )
         self.ble_client = ble_client
         self.data = {
-            "connected": False,
+            "connection_state": "disconnected",  # connected, connecting, disconnected
             "current_heart_rate": None,
             "hbm_stats": None,
             "battery": None,
         }
+        self._reconnect_task: Optional[asyncio.Task] = None
+        self._running = True
 
     async def _async_update_data(self):
         """Fetch battery level periodically."""
@@ -60,6 +62,9 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
     async def async_config_entry_first_refresh(self) -> bool:
         """First refresh when config entry is set up."""
         try:
+            self.data["connection_state"] = "connecting"
+            self.async_set_updated_data(self.data)
+
             # Connect to device
             if not await self.ble_client.connect():
                 raise UpdateFailed("Failed to connect to Haylou watch")
@@ -72,11 +77,19 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             if not await self.ble_client.initialize_watch():
                 raise UpdateFailed("Failed to initialize Haylou watch")
 
-            self.data["connected"] = True
+            self.data["connection_state"] = "connected"
             self.last_update_success = True
+            self.async_set_updated_data(self.data)
+            
+            # Start background reconnection task
+            if self._reconnect_task is None:
+                self._reconnect_task = asyncio.create_task(self._ensure_connected())
+            
             return True
         except UpdateFailed as e:
             _LOGGER.error("Update failed: %s", e)
+            self.data["connection_state"] = "disconnected"
+            self.async_set_updated_data(self.data)
             self.last_update_success = False
             raise
 
@@ -105,10 +118,82 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             self.async_set_updated_data(self.data)
             return
 
+    async def _ensure_connected(self) -> None:
+        """Background task to monitor connection and auto-reconnect."""
+        reconnect_delay = 5  # Start with 5 seconds
+        max_reconnect_delay = 300  # Max 5 minutes
+        
+        while self._running:
+            try:
+                # Check if still connected
+                if self.ble_client.is_connected():
+                    # Reset delay on successful connection
+                    reconnect_delay = 5
+                    await asyncio.sleep(10)  # Check connection every 10 seconds
+                    continue
+                
+                # Connection lost, attempt reconnection
+                if self.data["connection_state"] != "disconnected":
+                    _LOGGER.warning("Connection lost to watch, attempting to reconnect...")
+                    self.data["connection_state"] = "disconnected"
+                    self.async_set_updated_data(self.data)
+                
+                await asyncio.sleep(reconnect_delay)
+                
+                # Try to reconnect
+                _LOGGER.info("Attempting to reconnect to watch...")
+                self.data["connection_state"] = "connecting"
+                self.async_set_updated_data(self.data)
+                
+                # Disconnect any existing connection
+                await self.ble_client.disconnect()
+                await asyncio.sleep(1)
+                
+                # Reconnect
+                if not await self.ble_client.connect():
+                    _LOGGER.warning("Failed to reconnect, retrying in %d seconds", reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+                    continue
+                
+                # Subscribe to notifications
+                if not await self.ble_client.subscribe_notifications(self._on_notification):
+                    _LOGGER.warning("Failed to subscribe to notifications")
+                    await self.ble_client.disconnect()
+                    reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+                    continue
+                
+                # Re-initialize watch
+                if not await self.ble_client.initialize_watch():
+                    _LOGGER.warning("Failed to initialize watch after reconnection")
+                    await self.ble_client.disconnect()
+                    reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+                    continue
+                
+                # Successful reconnection
+                _LOGGER.info("Successfully reconnected to watch")
+                self.data["connection_state"] = "connected"
+                self.last_update_success = True
+                self.async_set_updated_data(self.data)
+                reconnect_delay = 5  # Reset delay
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                _LOGGER.error("Error in reconnect loop: %s", e)
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+
     async def async_shutdown(self) -> None:
         """Shutdown coordinator and disconnect."""
+        self._running = False
+        if self._reconnect_task:
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
         await self.ble_client.disconnect()
-        self.data["connected"] = False
+        self.data["connection_state"] = "disconnected"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

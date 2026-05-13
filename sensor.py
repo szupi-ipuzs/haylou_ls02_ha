@@ -41,6 +41,9 @@ async def async_setup_entry(
         HaylouBatteryLevelSensor(
             coordinator, device_address, device_name, config_entry
         ),
+        HaylouConnectionStatusSensor(
+            coordinator, device_address, device_name, config_entry
+        ),
     ]
     async_add_entities(entities)
 
@@ -268,6 +271,48 @@ class HaylouBatteryLevelSensor(CoordinatorEntity, SensorEntity):
     def native_value(self) -> int | None:
         """Return the current battery level."""
         return self.coordinator.data.get("battery")
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device information for the Haylou watch."""
+        return {
+            "identifiers": {(DOMAIN, self.device_address)},
+            "name": self.device_name,
+            "manufacturer": MANUFACTURER,
+            "model": MODEL,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to Home Assistant."""
+        await super().async_added_to_hass()
+        self._handle_coordinator_update()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self.async_write_ha_state()
+
+
+class HaylouConnectionStatusSensor(CoordinatorEntity, SensorEntity):
+    """Represent Haylou watch BLE connection status as a diagnostic sensor."""
+
+    _attr_icon = "mdi:watch"
+    _attr_should_poll = False
+
+    def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self.device_address = device_address
+        self.device_name = device_name
+        self.config_entry = config_entry
+        self._attr_unique_id = f"{DOMAIN}_{device_address}_connection_status"
+        self._attr_name = f"{device_name} Connection Status"
+        self._attr_entity_id = f"sensor.haylou_ls02_connection_status_{device_address.replace(':', '')}"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the connection status."""
+        return self.coordinator.data.get("connection_state", "disconnected")
 
     @property
     def device_info(self) -> dict[str, Any]:

@@ -42,6 +42,10 @@ class HaylouBLEClient:
         self._notification_callback: Optional[Callable] = None
         self._subscribed = False
 
+    def is_connected(self) -> bool:
+        """Check if currently connected to the watch."""
+        return self._client is not None and self._client.is_connected
+
     async def connect(self) -> bool:
         """Connect to the watch."""
         try:
