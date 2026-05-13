@@ -1,13 +1,16 @@
 """Device tracker for Haylou LS02 watch connection state."""
 
 import logging
+from typing import Any
+
 from homeassistant.components.device_tracker import TrackerEntity, SourceType
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, CONF_DEVICE_ADDRESS, CONF_NAME
+from .const import DOMAIN, ICON_URL, MANUFACTURER, MODEL, CONF_DEVICE_ADDRESS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,7 +34,9 @@ async def async_setup_entry(
 class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
     """Represent a Haylou watch as a device tracker."""
 
-    _attr_source_type = SourceType.GPS
+    _attr_icon = "mdi:watch"
+    _attr_entity_picture = ICON_URL
+    _attr_source_type = SourceType.BLUETOOTH
     _attr_should_poll = False
 
     def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
@@ -65,6 +70,16 @@ class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
         """When entity is added to Home Assistant."""
         await super().async_added_to_hass()
         self._handle_coordinator_update()
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device information for the Haylou watch."""
+        return {
+            "identifiers": {(DOMAIN, self.device_address)},
+            "name": self.device_name,
+            "manufacturer": MANUFACTURER,
+            "model": MODEL,
+        }
 
     @callback
     def _handle_coordinator_update(self) -> None:

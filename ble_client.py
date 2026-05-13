@@ -6,7 +6,7 @@ from typing import Callable, Optional
 from datetime import datetime, timezone
 import struct
 
-from homeassistant.components.bluetooth import BluetoothServiceInfo, async_ble_device_from_address
+from homeassistant.components.bluetooth import BluetoothServiceInfo
 from homeassistant.core import HomeAssistant
 
 from .const import (
@@ -33,7 +33,6 @@ class HaylouBLEClient:
         """Initialize BLE client."""
         self.hass = hass
         self.device_address = device_address
-        self.ble_device = None
         self._client = None
         self._notification_callback: Optional[Callable] = None
         self._subscribed = False
@@ -41,19 +40,23 @@ class HaylouBLEClient:
     async def connect(self) -> bool:
         """Connect to the watch."""
         try:
-            # Get BLE device from Home Assistant's Bluetooth integration
-            self.ble_device = await async_ble_device_from_address(
-                self.hass, self.device_address
-            )
-            if not self.ble_device:
+            # Use BleakScanner to resolve the device by address first
+            from bleak import BleakScanner
+            from bleak_retry_connector import establish_connection, BleakClientWithServiceCache
+
+            device = await BleakScanner.find_device_by_address(self.device_address)
+            if device is None:
                 _LOGGER.error("Could not find BLE device: %s", self.device_address)
                 return False
 
-            # Import here to avoid issues if bluetooth integration not loaded
-            from homeassistant.components.bluetooth import async_client_connect
+            self._client = await establish_connection(
+                BleakClientWithServiceCache,
+                device,
+                device.name or self.device_address,
+                max_attempts=3,
+            )
 
-            self._client = await async_client_connect(self.hass, self.ble_device)
-            if not self._client:
+            if not self._client or not self._client.is_connected:
                 _LOGGER.error("Failed to connect to device: %s", self.device_address)
                 return False
 

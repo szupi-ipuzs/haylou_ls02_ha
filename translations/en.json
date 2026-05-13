@@ -10,16 +10,18 @@
       },
       "scan": {
         "title": "Select Haylou Watch",
-        "description": "Select a Haylou Smart Watch 2 from the list",
+        "description": "Select a discovered Haylou Smart Watch 2 from the list below",
         "data": {
-          "device": "Device"
+          "device": "Device",
+          "action": "Action",
+          "refresh": "Refresh device list"
         }
       },
       "manual": {
         "title": "Enter Device Address",
-        "description": "Enter the Bluetooth MAC address of your Haylou watch",
+        "description": "Enter the Bluetooth MAC address of your Haylou Smart Watch 2 (format: XX:XX:XX:XX:XX:XX)",
         "data": {
-          "device_address": "Device Address (XX:XX:XX:XX:XX:XX)"
+          "device_address": "Device Address"
         }
       },
       "name": {
@@ -32,13 +34,11 @@
     },
     "error": {
       "invalid_address_format": "Invalid MAC address format. Use XX:XX:XX:XX:XX:XX",
-      "no_devices_found": "No Haylou Smart Watch 2 devices found",
-      "not_haylou_watch": "This device is not a Haylou watch"
+      "already_configured": "This device is already configured"
     },
     "abort": {
       "already_configured": "This device is already configured",
-      "no_devices_found": "No Haylou Smart Watch 2 devices found",
-      "not_haylou_watch": "This device is not a Haylou watch"
+      "no_devices_found": "No Haylou Smart Watch 2 devices found. Make sure the watch is powered on and in Bluetooth range."
     }
   },
   "options": {

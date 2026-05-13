@@ -5,14 +5,11 @@ from typing import Any, Dict, Optional
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.components.bluetooth import (
-    async_get_bluetooth_devices,
-    BluetoothServiceInfo,
-)
+from homeassistant.components import bluetooth
+from homeassistant.components.bluetooth import BluetoothServiceInfo
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers.device_registry import format_mac
 
 from .const import CONF_DEVICE_ADDRESS, DEVICE_NAME_FILTER, DOMAIN
 
@@ -33,7 +30,7 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> config_entries.OptionFlow:
+    ) -> config_entries.OptionsFlow:
         """Create the options flow."""
         return HaylouOptionsFlow(config_entry)
 
@@ -66,29 +63,50 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Scan for Haylou devices."""
         if user_input is not None:
-            # User selected a device from the list
-            device_address = user_input["device"]
-            self.selected_device = device_address
-            return await self.async_step_name()
+            if "device" in user_input and not user_input.get("refresh", False):
+                # User selected a device from the list
+                device_address = user_input["device"]
+                self.selected_device = device_address
+                return await self.async_step_name()
+            elif user_input.get("action") == "manual":
+                # User chose to enter address manually
+                return await self.async_step_manual()
+            # For "retry", "refresh", or any other case, fall through to rescan
 
-        # Get Bluetooth devices from Home Assistant
-        devices = async_get_bluetooth_devices(self.hass)
+        # Get discovered Bluetooth services from Home Assistant
         self.discovered_devices = {}
 
-        for device in devices.values():
-            # Check if device advertises as "Haylou Smart Watch 2"
-            if (
-                device.name == DEVICE_NAME_FILTER
-                and device.address
-            ):
-                # Check if this device is already configured
-                await self.async_set_unique_id(device.address)
-                self._abort_if_unique_id_configured()
+        # Use the bluetooth module to get discovered services
+        try:
+            discovered_services = bluetooth.async_discovered_service_info(self.hass)
 
-                self.discovered_devices[device.address] = device
+            for service_info in discovered_services:
+                # Check if device advertises as "Haylou Smart Watch 2"
+                if (
+                    service_info.name == DEVICE_NAME_FILTER
+                    and service_info.address
+                ):
+                    self.discovered_devices[service_info.address] = service_info
+        except Exception as e:
+            _LOGGER.warning("Error getting Bluetooth devices: %s", e)
 
         if not self.discovered_devices:
-            return self.async_abort_reason("no_devices_found")
+            return self.async_show_form(
+                step_id="scan",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required("action", default="retry"): vol.In(
+                            {
+                                "retry": "Retry scan",
+                                "manual": "Enter device address manually",
+                            }
+                        ),
+                    }
+                ),
+                description_placeholders={
+                    "error": "No Haylou Smart Watch 2 devices found. Make sure your watch is powered on and in Bluetooth range.",
+                },
+            )
 
         # Create device list for user to choose from
         device_options = {
@@ -99,7 +117,10 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="scan",
             data_schema=vol.Schema(
-                {vol.Required("device"): vol.In(device_options)}
+                {
+                    vol.Required("device"): vol.In(device_options),
+                    vol.Optional("refresh", default=False): bool,
+                }
             ),
         )
 
@@ -131,6 +152,9 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
+            description_placeholders={
+                "device_name": DEVICE_NAME_FILTER,
+            },
         )
 
     async def async_step_name(
@@ -184,7 +208,7 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_name()
 
 
-class HaylouOptionsFlow(config_entries.OptionFlow):
+class HaylouOptionsFlow(config_entries.OptionsFlow):
     """Handle options for Haylou LS02."""
 
     async def async_step_init(

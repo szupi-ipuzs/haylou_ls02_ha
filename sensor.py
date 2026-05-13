@@ -1,14 +1,16 @@
 """Sensor for Haylou LS02 heart rate statistics."""
 
 import logging
+from typing import Any
+
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfMeasurement
+from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, CONF_DEVICE_ADDRESS, CONF_NAME
+from .const import DOMAIN, ICON_URL, MANUFACTURER, MODEL, CONF_DEVICE_ADDRESS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ class HaylouHeartRateSensor(CoordinatorEntity, SensorEntity):
     """Represent Haylou watch heart rate statistics as a sensor."""
 
     _attr_icon = "mdi:heart-pulse"
+    _attr_entity_picture = ICON_URL
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "bpm"
     _attr_should_poll = False
@@ -82,6 +85,16 @@ class HaylouHeartRateSensor(CoordinatorEntity, SensorEntity):
         """When entity is added to Home Assistant."""
         await super().async_added_to_hass()
         self._handle_coordinator_update()
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device information for the Haylou watch."""
+        return {
+            "identifiers": {(DOMAIN, self.device_address)},
+            "name": self.device_name,
+            "manufacturer": MANUFACTURER,
+            "model": MODEL,
+        }
 
     @callback
     def _handle_coordinator_update(self) -> None:

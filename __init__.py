@@ -2,11 +2,12 @@
 
 import asyncio
 import logging
+import os
 from typing import Final
 
 from homeassistant.components.bluetooth import BluetoothServiceInfo, async_last_service_info
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform, CONF_NAME
+from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import (
@@ -18,6 +19,7 @@ from homeassistant.helpers.update_coordinator import (
 from .const import (
     CONF_DEVICE_ADDRESS,
     DOMAIN,
+    ICON_URL,
     SERVICE_SEND_MESSAGE,
     SERVICE_REQUEST_BATTERY,
 )
@@ -25,7 +27,7 @@ from .ble_client import HaylouBLEClient
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.DEVICE_TRACKER, Platform.SENSOR]
+PLATFORMS = ["device_tracker", "sensor"]
 
 SCAN_INTERVAL_SECONDS = 60
 
@@ -117,6 +119,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "ble_client": ble_client,
     }
 
+    _register_icon_static_path(hass)
+
     # Set up entities
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -145,6 +149,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return unload_ok
 
     return False
+
+
+def _register_icon_static_path(hass: HomeAssistant) -> None:
+    """Register the integration icon for entity presentation."""
+    icon_file_path = os.path.join(os.path.dirname(__file__), "icon.png")
+    try:
+        if hasattr(hass, "http") and hasattr(hass.http, "register_static_path"):
+            hass.http.register_static_path(ICON_URL, icon_file_path, False)
+    except Exception as err:
+        _LOGGER.debug("Unable to register icon static path: %s", err)
 
 
 def async_setup_services(
@@ -182,14 +196,12 @@ def async_setup_services(
         DOMAIN,
         SERVICE_SEND_MESSAGE,
         send_message_handler,
-        supports_template=False,
     )
 
     hass.services.async_register(
         DOMAIN,
         SERVICE_REQUEST_BATTERY,
         request_battery_handler,
-        supports_template=False,
     )
 
     _LOGGER.debug("Services registered for %s", device_name)

@@ -3,8 +3,14 @@
   "name": "Haylou LS02 Watch",
   "codeowners": ["@szupi"],
   "config_flow": true,
+  "icon": "mdi:watch",
+  "bluetooth": [
+    {
+      "local_name": "Haylou Smart Watch 2*"
+    }
+  ],
   "documentation": "https://github.com/szupi/haylou_ls02_ha",
-  "requirements": [],
+  "requirements": ["bleak_retry_connector>=2.4.0"],
   "version": "1.0.0",
   "issue_tracker": "https://github.com/szupi/haylou_ls02_ha/issues",
   "iot_class": "local_polling",
