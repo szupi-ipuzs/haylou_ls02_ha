@@ -72,6 +72,7 @@ COORDINATOR_CONNECTION_STATE = "connection_state"
 # Service names
 SERVICE_SEND_MESSAGE = "send_message"
 SERVICE_REQUEST_BATTERY = "request_battery"
+SERVICE_REQUEST_HBM_STATUS = "request_hbm_status"
 
 # Notification payload filters
 FILTER_BATTERY_RESULT = b"\xa2"

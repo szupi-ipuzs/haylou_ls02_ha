@@ -22,6 +22,7 @@ from .const import (
     ICON_URL,
     SERVICE_SEND_MESSAGE,
     SERVICE_REQUEST_BATTERY,
+    SERVICE_REQUEST_HBM_STATUS,
 )
 from .ble_client import HaylouBLEClient
 
@@ -46,6 +47,7 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         self.ble_client = ble_client
         self.data = {
             "connected": False,
+            "current_heart_rate": None,
             "hbm_stats": None,
             "battery": None,
         }
@@ -61,8 +63,9 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             if not await self.ble_client.subscribe_notifications(self._on_notification):
                 raise UpdateFailed("Failed to subscribe to watch notifications")
 
-            # Request initial battery status
-            await self.ble_client.request_battery()
+            # Initialize the watch once connected
+            if not await self.ble_client.initialize_watch():
+                raise UpdateFailed("Failed to initialize Haylou watch")
 
             self.data["connected"] = True
             self.last_update_success = True
@@ -80,6 +83,13 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         battery = self.ble_client.parse_battery_status(payload)
         if battery is not None:
             self.data["battery"] = battery
+            self.async_set_updated_data(self.data)
+            return
+
+        # Parse current HBM status
+        current_hr = self.ble_client.parse_hbm_status(payload)
+        if current_hr is not None:
+            self.data["current_heart_rate"] = current_hr
             self.async_set_updated_data(self.data)
             return
 
@@ -126,9 +136,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Register services
     async_setup_services(hass, entry, coordinator, ble_client)
-
-    # Listen for removal
-    entry.async_on_unload(hass.config_entries.async_unload_platforms(entry, PLATFORMS))
 
     return True
 
@@ -188,9 +195,15 @@ def async_setup_services(
         _LOGGER.debug("Requesting battery status from %s", device_address)
         await ble_client.request_battery()
 
+    async def request_hbm_status_handler(call):
+        """Handle request_hbm_status service call."""
+        _LOGGER.debug("Requesting HBM status from %s", device_address)
+        await ble_client.request_hbm_status()
+
     # Register service for this specific device
     service_send_id = f"{DOMAIN}_{device_address.replace(':', '_')}_send_message"
     service_battery_id = f"{DOMAIN}_{device_address.replace(':', '_')}_request_battery"
+    service_hbm_id = f"{DOMAIN}_{device_address.replace(':', '_')}_request_hbm_status"
 
     hass.services.async_register(
         DOMAIN,
@@ -202,6 +215,12 @@ def async_setup_services(
         DOMAIN,
         SERVICE_REQUEST_BATTERY,
         request_battery_handler,
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REQUEST_HBM_STATUS,
+        request_hbm_status_handler,
     )
 
     _LOGGER.debug("Services registered for %s", device_name)
