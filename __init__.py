@@ -80,11 +80,11 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             self.data["connection_state"] = "connected"
             self.last_update_success = True
             self.async_set_updated_data(self.data)
-            
+
             # Start background reconnection task
             if self._reconnect_task is None:
                 self._reconnect_task = asyncio.create_task(self._ensure_connected())
-            
+
             return True
         except UpdateFailed as e:
             _LOGGER.error("Update failed: %s", e)
@@ -122,7 +122,7 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         """Background task to monitor connection and auto-reconnect."""
         reconnect_delay = 5  # Start with 5 seconds
         max_reconnect_delay = 300  # Max 5 minutes
-        
+
         while self._running:
             try:
                 # Check if still connected
@@ -131,51 +131,51 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
                     reconnect_delay = 5
                     await asyncio.sleep(10)  # Check connection every 10 seconds
                     continue
-                
+
                 # Connection lost, attempt reconnection
                 if self.data["connection_state"] != "disconnected":
                     _LOGGER.warning("Connection lost to watch, attempting to reconnect...")
                     self.data["connection_state"] = "disconnected"
                     self.async_set_updated_data(self.data)
-                
+
                 await asyncio.sleep(reconnect_delay)
-                
+
                 # Try to reconnect
                 _LOGGER.info("Attempting to reconnect to watch...")
                 self.data["connection_state"] = "connecting"
                 self.async_set_updated_data(self.data)
-                
+
                 # Disconnect any existing connection
                 await self.ble_client.disconnect()
                 await asyncio.sleep(1)
-                
+
                 # Reconnect
                 if not await self.ble_client.connect():
                     _LOGGER.warning("Failed to reconnect, retrying in %d seconds", reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
                     continue
-                
+
                 # Subscribe to notifications
                 if not await self.ble_client.subscribe_notifications(self._on_notification):
                     _LOGGER.warning("Failed to subscribe to notifications")
                     await self.ble_client.disconnect()
                     reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
                     continue
-                
+
                 # Re-initialize watch
                 if not await self.ble_client.initialize_watch():
                     _LOGGER.warning("Failed to initialize watch after reconnection")
                     await self.ble_client.disconnect()
                     reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
                     continue
-                
+
                 # Successful reconnection
                 _LOGGER.info("Successfully reconnected to watch")
                 self.data["connection_state"] = "connected"
                 self.last_update_success = True
                 self.async_set_updated_data(self.data)
                 reconnect_delay = 5  # Reset delay
-                
+
             except asyncio.CancelledError:
                 break
             except Exception as e:

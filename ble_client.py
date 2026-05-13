@@ -402,9 +402,9 @@ class HaylouBLEClient:
                 hour = payload[6]
                 minute = payload[7]
                 # second = payload[8]  # Not used in this format
-                bpm_min = payload[8]
-                bpm_avg = payload[9]
-                bpm_max = payload[10]
+                bpm_max = payload[8]
+                bpm_min = payload[9]
+                bpm_avg = payload[10]
 
                 timestamp = datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
 
