@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, ICON_URL, MANUFACTURER, MODEL, CONF_DEVICE_ADDRESS
+from .const import DOMAIN, MANUFACTURER, MODEL, CONF_DEVICE_ADDRESS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,7 +35,6 @@ class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
     """Represent a Haylou watch as a device tracker."""
 
     _attr_icon = "mdi:watch"
-    _attr_entity_picture = ICON_URL
     _attr_source_type = SourceType.BLUETOOTH
     _attr_should_poll = False
 

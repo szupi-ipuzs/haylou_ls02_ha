@@ -3,14 +3,14 @@
 import logging
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, ICON_URL, MANUFACTURER, MODEL, CONF_DEVICE_ADDRESS
+from .const import DOMAIN, MANUFACTURER, MODEL, CONF_DEVICE_ADDRESS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +38,9 @@ async def async_setup_entry(
         HaylouHeartRateAverageSensor(
             coordinator, device_address, device_name, config_entry
         ),
+        HaylouBatteryLevelSensor(
+            coordinator, device_address, device_name, config_entry
+        ),
     ]
     async_add_entities(entities)
 
@@ -46,7 +49,6 @@ class HaylouHeartRateCurrentSensor(CoordinatorEntity, SensorEntity):
     """Represent Haylou watch current heart rate as a sensor."""
 
     _attr_icon = "mdi:heart-pulse"
-    _attr_entity_picture = ICON_URL
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "bpm"
     _attr_should_poll = False
@@ -91,7 +93,6 @@ class HaylouHeartRateMaxSensor(CoordinatorEntity, SensorEntity):
     """Represent Haylou watch maximum heart rate as a sensor."""
 
     _attr_icon = "mdi:heart-pulse"
-    _attr_entity_picture = ICON_URL
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "bpm"
     _attr_should_poll = False
@@ -144,7 +145,6 @@ class HaylouHeartRateMinSensor(CoordinatorEntity, SensorEntity):
     """Represent Haylou watch minimum heart rate as a sensor."""
 
     _attr_icon = "mdi:heart-pulse"
-    _attr_entity_picture = ICON_URL
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "bpm"
     _attr_should_poll = False
@@ -197,7 +197,6 @@ class HaylouHeartRateAverageSensor(CoordinatorEntity, SensorEntity):
     """Represent Haylou watch average heart rate as a sensor."""
 
     _attr_icon = "mdi:heart-pulse"
-    _attr_entity_picture = ICON_URL
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "bpm"
     _attr_should_poll = False
@@ -224,6 +223,51 @@ class HaylouHeartRateAverageSensor(CoordinatorEntity, SensorEntity):
             return hbm_stats["bpm_avg"]
 
         return None
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device information for the Haylou watch."""
+        return {
+            "identifiers": {(DOMAIN, self.device_address)},
+            "name": self.device_name,
+            "manufacturer": MANUFACTURER,
+            "model": MODEL,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to Home Assistant."""
+        await super().async_added_to_hass()
+        self._handle_coordinator_update()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self.async_write_ha_state()
+
+
+class HaylouBatteryLevelSensor(CoordinatorEntity, SensorEntity):
+    """Represent current Haylou watch battery level as a sensor."""
+
+    _attr_icon = "mdi:battery"
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+    _attr_should_poll = False
+
+    def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self.device_address = device_address
+        self.device_name = device_name
+        self.config_entry = config_entry
+        self._attr_unique_id = f"{DOMAIN}_{device_address}_battery_level"
+        self._attr_name = f"{device_name} Battery Level"
+        self._attr_entity_id = f"sensor.haylou_ls02_battery_level_{device_address.replace(':', '')}"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the current battery level."""
+        return self.coordinator.data.get("battery")
 
     @property
     def device_info(self) -> dict[str, Any]:

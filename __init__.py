@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-import os
+from datetime import timedelta
 from typing import Final
 
 from homeassistant.components.bluetooth import BluetoothServiceInfo, async_last_service_info
@@ -19,7 +19,6 @@ from homeassistant.helpers.update_coordinator import (
 from .const import (
     CONF_DEVICE_ADDRESS,
     DOMAIN,
-    ICON_URL,
     SERVICE_SEND_MESSAGE,
     SERVICE_REQUEST_BATTERY,
     SERVICE_REQUEST_HBM_STATUS,
@@ -42,7 +41,7 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=None,  # No automatic polling; reactive updates
+            update_interval=timedelta(hours=1),
         )
         self.ble_client = ble_client
         self.data = {
@@ -51,6 +50,12 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             "hbm_stats": None,
             "battery": None,
         }
+
+    async def _async_update_data(self):
+        """Fetch battery level periodically."""
+        if not await self.ble_client.request_battery():
+            raise UpdateFailed("Failed to request battery status")
+        return self.data
 
     async def async_config_entry_first_refresh(self) -> bool:
         """First refresh when config entry is set up."""
@@ -129,8 +134,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "ble_client": ble_client,
     }
 
-    _register_icon_static_path(hass)
-
     # Set up entities
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -156,16 +159,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return unload_ok
 
     return False
-
-
-def _register_icon_static_path(hass: HomeAssistant) -> None:
-    """Register the integration icon for entity presentation."""
-    icon_file_path = os.path.join(os.path.dirname(__file__), "icon.png")
-    try:
-        if hasattr(hass, "http") and hasattr(hass.http, "register_static_path"):
-            hass.http.register_static_path(ICON_URL, icon_file_path, False)
-    except Exception as err:
-        _LOGGER.debug("Unable to register icon static path: %s", err)
 
 
 def async_setup_services(

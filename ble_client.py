@@ -437,9 +437,9 @@ class HaylouBLEClient:
     def parse_hbm_status(self, payload: bytes) -> Optional[int]:
         """Parse current HBM status from notification payload."""
         try:
-            if len(payload) >= 2 and payload[0] == CMD_ID_HBM_STATUS:
-                # Current heart rate is in the second byte
-                return payload[1]
+            if len(payload) >= 4 and payload[0] == CMD_ID_HBM_STATUS and payload[1] == 0x11:
+                # HBM extended status response contains BPM in payload[3]
+                return payload[3]
             return None
         except Exception as e:
             _LOGGER.error("Error parsing HBM status: %s", e)
