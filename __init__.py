@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Final, Optional
 
 from homeassistant.components.bluetooth import BluetoothServiceInfo, async_last_service_info
@@ -36,19 +36,24 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
     """Coordinator for Haylou LS02 watch data."""
 
     def __init__(self, hass: HomeAssistant, ble_client: HaylouBLEClient):
-        """Initialize coordinator."""
+        """Initialize coordinator.
+
+        Manages data for a specific Haylou watch identified by MAC address.
+        All data updates are based on communication with the device identified by its MAC address.
+        """
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             update_interval=timedelta(hours=1),
         )
-        self.ble_client = ble_client
+        self.ble_client = ble_client  # BLE client connected to specific MAC address
         self.data = {
             "connection_state": "disconnected",  # connected, connecting, disconnected
             "current_heart_rate": None,
             "hbm_stats": None,
             "battery": None,
+            "last_ble_detected": None,  # Last time device was detected in BLE scan
         }
         self._reconnect_task: Optional[asyncio.Task] = None
         self._running = True
@@ -59,7 +64,7 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             raise UpdateFailed("Failed to request battery status")
         return self.data
 
-    async def async_config_entry_first_refresh(self) -> bool:
+    async def async_config_entry_first_refresh(self) -> None:
         """First refresh when config entry is set up."""
         try:
             self.data["connection_state"] = "connecting"
@@ -78,14 +83,13 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
                 raise UpdateFailed("Failed to initialize Haylou watch")
 
             self.data["connection_state"] = "connected"
+            self.data["last_ble_detected"] = datetime.now(timezone.utc)
             self.last_update_success = True
             self.async_set_updated_data(self.data)
 
             # Start background reconnection task
             if self._reconnect_task is None:
                 self._reconnect_task = asyncio.create_task(self._ensure_connected())
-
-            return True
         except UpdateFailed as e:
             _LOGGER.error("Update failed: %s", e)
             self.data["connection_state"] = "disconnected"
@@ -96,6 +100,8 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
     def _on_notification(self, payload: bytes) -> None:
         """Handle incoming notification from watch."""
         _LOGGER.debug("Received notification: %s", payload.hex())
+        # Update last detected time whenever we receive data
+        self.data["last_ble_detected"] = datetime.now(timezone.utc)
 
         # Parse battery status
         battery = self.ble_client.parse_battery_status(payload)
@@ -172,6 +178,7 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
                 # Successful reconnection
                 _LOGGER.info("Successfully reconnected to watch")
                 self.data["connection_state"] = "connected"
+                self.data["last_ble_detected"] = datetime.now(timezone.utc)
                 self.last_update_success = True
                 self.async_set_updated_data(self.data)
                 reconnect_delay = 5  # Reset delay

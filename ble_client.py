@@ -35,9 +35,14 @@ class HaylouBLEClient:
     """Client for Haylou LS02 watch over BLE."""
 
     def __init__(self, hass: HomeAssistant, device_address: str):
-        """Initialize BLE client."""
+        """Initialize BLE client.
+
+        Args:
+            hass: Home Assistant instance
+            device_address: MAC address of the Haylou watch (e.g., "AA:BB:CC:DD:EE:FF")
+        """
         self.hass = hass
-        self.device_address = device_address
+        self.device_address = device_address  # MAC address of the watch
         self._client = None
         self._notification_callback: Optional[Callable] = None
         self._subscribed = False
