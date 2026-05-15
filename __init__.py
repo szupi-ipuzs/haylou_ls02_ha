@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Final, Optional
+from typing import Any, Final, Optional
 
 from homeassistant.components.bluetooth import BluetoothServiceInfo, async_last_service_info
 from homeassistant.config_entries import ConfigEntry
@@ -18,12 +18,14 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import (
     CONF_DEVICE_ADDRESS,
+    CONF_WEATHER_SOURCE,
     DOMAIN,
     SERVICE_SEND_MESSAGE,
     SERVICE_REQUEST_BATTERY,
     SERVICE_REQUEST_HBM_STATUS,
 )
 from .ble_client import HaylouBLEClient
+from .sensor import extract_weather_data
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,7 +37,7 @@ SCAN_INTERVAL_SECONDS = 60
 class HaylouUpdateCoordinator(DataUpdateCoordinator):
     """Coordinator for Haylou LS02 watch data."""
 
-    def __init__(self, hass: HomeAssistant, ble_client: HaylouBLEClient):
+    def __init__(self, hass: HomeAssistant, ble_client: HaylouBLEClient, config_entry: ConfigEntry):
         """Initialize coordinator.
 
         Manages data for a specific Haylou watch identified by MAC address.
@@ -48,6 +50,7 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(hours=1),
         )
         self.ble_client = ble_client  # BLE client connected to specific MAC address
+        self.config_entry = config_entry
         self.data = {
             "connection_state": "disconnected",  # connected, connecting, disconnected
             "current_heart_rate": None,
@@ -56,6 +59,8 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             "last_ble_detected": None,  # Last time device was detected in BLE scan
         }
         self._reconnect_task: Optional[asyncio.Task] = None
+        self._weather_task: Optional[asyncio.Task] = None
+        self._cached_weather: dict[str, Any] | None = None
         self._running = True
 
     async def _async_update_data(self):
@@ -63,6 +68,94 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         if not await self.ble_client.request_battery():
             raise UpdateFailed("Failed to request battery status")
         return self.data
+
+    async def _get_weather_payload(self) -> dict[str, Any]:
+        """Fetch the current weather and next-day forecast from HA."""
+        weather_entity_id = self.config_entry.options.get(
+            CONF_WEATHER_SOURCE,
+            self.config_entry.data.get(CONF_WEATHER_SOURCE),
+        )
+        if not weather_entity_id:
+            return {
+                "today": {
+                    "weather_type": 1,
+                    "current_temperature": 0,
+                    "max_temperature": 0,
+                    "min_temperature": 0,
+                },
+                "next": {
+                    "weather_type": 1,
+                    "max_temperature": 0,
+                    "min_temperature": 0,
+                },
+            }
+
+        weather_data = extract_weather_data(self.hass, weather_entity_id)
+        if not weather_data:
+            return {
+                "today": {
+                    "weather_type": 1,
+                    "current_temperature": 0,
+                    "max_temperature": 0,
+                    "min_temperature": 0,
+                },
+                "next": {
+                    "weather_type": 1,
+                    "max_temperature": 0,
+                    "min_temperature": 0,
+                },
+            }
+
+        self._cached_weather = weather_data
+        return weather_data
+
+    async def _send_weather_to_watch(self) -> bool:
+        """Send the current and next-day weather to the watch."""
+        weather_payload = self._cached_weather
+        if weather_payload is None:
+            weather_payload = await self._get_weather_payload()
+
+        if not weather_payload:
+            return False
+
+        today = weather_payload["today"]
+        next_day = weather_payload["next"]
+
+        if not await self.ble_client.set_weather_today(
+            today["weather_type"],
+            int(today["current_temperature"]),
+            int(today["max_temperature"]),
+            int(today["min_temperature"]),
+        ):
+            return False
+
+        if not await self.ble_client.set_weather_next(
+            next_day["weather_type"],
+            int(next_day["max_temperature"]),
+            int(next_day["min_temperature"]),
+            next_day["weather_type"],
+            int(next_day["max_temperature"]),
+            int(next_day["min_temperature"]),
+            next_day["weather_type"],
+            int(next_day["max_temperature"]),
+            int(next_day["min_temperature"]),
+        ):
+            return False
+
+        return True
+
+    async def _weather_loop(self) -> None:
+        """Periodic weather refresh task while connected."""
+        while self._running:
+            try:
+                if self.data["connection_state"] != "connected":
+                    await asyncio.sleep(15 * 60)
+                    continue
+                await self._get_weather_payload()
+                await self._send_weather_to_watch()
+            except Exception as err:  # pylint: disable=broad-except
+                _LOGGER.debug("Weather refresh failed: %s", err)
+            await asyncio.sleep(15 * 60)
 
     async def async_config_entry_first_refresh(self) -> None:
         """First refresh when config entry is set up."""
@@ -82,6 +175,10 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             if not await self.ble_client.initialize_watch():
                 raise UpdateFailed("Failed to initialize Haylou watch")
 
+            # Send weather at initialization if configured
+            await self._get_weather_payload()
+            await self._send_weather_to_watch()
+
             self.data["connection_state"] = "connected"
             self.data["last_ble_detected"] = datetime.now(timezone.utc)
             self.last_update_success = True
@@ -90,6 +187,10 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             # Start background reconnection task
             if self._reconnect_task is None:
                 self._reconnect_task = asyncio.create_task(self._ensure_connected())
+
+            # Start periodic weather refresh task
+            if self._weather_task is None:
+                self._weather_task = asyncio.create_task(self._weather_loop())
         except UpdateFailed as e:
             _LOGGER.error("Update failed: %s", e)
             self.data["connection_state"] = "disconnected"
@@ -193,6 +294,12 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
     async def async_shutdown(self) -> None:
         """Shutdown coordinator and disconnect."""
         self._running = False
+        if self._weather_task:
+            self._weather_task.cancel()
+            try:
+                await self._weather_task
+            except asyncio.CancelledError:
+                pass
         if self._reconnect_task:
             self._reconnect_task.cancel()
             try:
@@ -209,7 +316,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Initialize coordinator
     ble_client = HaylouBLEClient(hass, entry.data[CONF_DEVICE_ADDRESS])
-    coordinator = HaylouUpdateCoordinator(hass, ble_client)
+    coordinator = HaylouUpdateCoordinator(hass, ble_client, entry)
 
     # Perform first refresh
     try:

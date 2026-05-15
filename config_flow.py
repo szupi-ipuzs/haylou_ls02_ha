@@ -10,8 +10,9 @@ from homeassistant.components.bluetooth import BluetoothServiceInfo
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.selector import selector
 
-from .const import CONF_DEVICE_ADDRESS, DEVICE_NAME_FILTER, DOMAIN
+from .const import CONF_DEVICE_ADDRESS, CONF_WEATHER_SOURCE, DEVICE_NAME_FILTER, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -160,16 +161,20 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_name(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
-        """Let user assign a friendly name to the device."""
+        """Let user assign a friendly name and weather source to the device."""
         if user_input is not None:
-            device_name = user_input.get(CONF_NAME, f"Haylou Watch")
+            device_name = user_input.get(CONF_NAME, "Haylou Watch")
+            weather_source = user_input.get(CONF_WEATHER_SOURCE)
 
-            # Create config entry
+            # Create config entry with weather source saved as options
             return self.async_create_entry(
                 title=device_name,
                 data={
                     CONF_DEVICE_ADDRESS: self.selected_device,
                     CONF_NAME: device_name,
+                },
+                options={
+                    CONF_WEATHER_SOURCE: weather_source,
                 },
             )
 
@@ -178,6 +183,10 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_NAME, default="Haylou Watch"): str,
+                    vol.Optional(
+                        CONF_WEATHER_SOURCE,
+                        default=None,
+                    ): selector({"entity": {"domain": "weather"}}),
                 }
             ),
             description_placeholders={"device_address": self.selected_device},
@@ -211,6 +220,10 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class HaylouOptionsFlow(config_entries.OptionsFlow):
     """Handle options for Haylou LS02."""
 
+    def __init__(self, config_entry: config_entries.ConfigEntry):
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
     async def async_step_init(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
@@ -223,9 +236,9 @@ class HaylouOptionsFlow(config_entries.OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Optional(
-                        "polling_interval",
-                        default=self.config_entry.options.get("polling_interval", 60),
-                    ): int,
+                        CONF_WEATHER_SOURCE,
+                        default=self.config_entry.options.get(CONF_WEATHER_SOURCE),
+                    ): selector({"entity": {"domain": "weather"}}),
                 }
             ),
         )

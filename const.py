@@ -59,6 +59,7 @@ ALERT_MSG_TYPES = {
 # Data keys
 CONF_DEVICE_ADDRESS = "device_address"
 CONF_DEVICE_NAME = "device_name"
+CONF_WEATHER_SOURCE = "weather_source"
 
 # Entity types
 ENTITY_DEVICE_TRACKER = "device_tracker"
