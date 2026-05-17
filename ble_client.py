@@ -2,25 +2,32 @@
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Callable, Optional
 from datetime import datetime, timezone
-import struct
 
-from homeassistant.components.bluetooth import BluetoothServiceInfo
 from homeassistant.core import HomeAssistant
+from .helpers import HaylouTime, HaylouSteps
 
 from .const import (
-    SERVICE_UUID,
-    CHAR_WRITE_UUID,
-    CHAR_NOTIFY_UUID,
+    CMD_ID_HBM_STATUS2,
+    SERVICE_1_UUID,
+    SERVICE_2_UUID,
+    CHAR_GENERAL_RW_1_UUID,
+    CHAR_DATA2_RW_UUID,
+    CHAR_GENERAL_N_1_UUID,
+    CHAR_DATA2_N_UUID,
     CMD_ID_ALERT_MSG,
     CMD_ID_BATTERY,
     CMD_ID_HBM_STATISTICS,
     CMD_ID_HBM_STATUS,
+    CMD_ID_HBM_STATUS_REQUEST,
     CMD_ID_PAIR,
     CMD_ID_TIME,
     CMD_ID_UNITS,
     CMD_ID_WEATHER,
+    CMD_ID_SPORT_STATISTICS,
+    CMD_ID_SPORT_STATISTICS2,
     ALERT_MSG_TYPES,
 )
 
@@ -29,6 +36,14 @@ _LOGGER = logging.getLogger(__name__)
 MAX_COMMAND_LENGTH = 48
 MAX_MESSAGE_CHARS = 128  # UTF-16 encoded
 MAX_BATCH_CHARS = 10  # UTF-16 chars per batch
+
+
+@dataclass(frozen=True)
+class NotificationCallbacks:
+    """Per-characteristic notification handlers."""
+
+    on_general_n1: Callable[[bytes], None]
+    on_data2_n: Callable[[bytes], None]
 
 
 class HaylouBLEClient:
@@ -44,8 +59,9 @@ class HaylouBLEClient:
         self.hass = hass
         self.device_address = device_address  # MAC address of the watch
         self._client = None
-        self._notification_callback: Optional[Callable] = None
+        self._notification_callbacks: Optional[NotificationCallbacks] = None
         self._subscribed = False
+        self._steps_counter = HaylouSteps()
 
     def is_connected(self) -> bool:
         """Check if currently connected to the watch."""
@@ -93,7 +109,7 @@ class HaylouBLEClient:
             _LOGGER.error("Error disconnecting: %s", e)
 
     async def subscribe_notifications(
-        self, callback: Callable[[bytes], None]
+        self, callbacks: NotificationCallbacks
     ) -> bool:
         """Subscribe to watch notifications."""
         try:
@@ -101,9 +117,12 @@ class HaylouBLEClient:
                 _LOGGER.error("Not connected to device")
                 return False
 
-            self._notification_callback = callback
+            self._notification_callbacks = callbacks
             await self._client.start_notify(
-                CHAR_NOTIFY_UUID, self._on_notification
+                CHAR_GENERAL_N_1_UUID, self._on_notification_n1
+            )
+            await self._client.start_notify(
+                CHAR_DATA2_N_UUID, self._on_notification_data2
             )
             self._subscribed = True
             _LOGGER.debug("Subscribed to notifications")
@@ -116,20 +135,26 @@ class HaylouBLEClient:
         """Unsubscribe from watch notifications."""
         try:
             if self._client and self._subscribed:
-                await self._client.stop_notify(CHAR_NOTIFY_UUID)
+                await self._client.stop_notify(CHAR_GENERAL_N_1_UUID)
+                await self._client.stop_notify(CHAR_DATA2_N_UUID)
                 self._subscribed = False
-            self._notification_callback = None
+            self._notification_callbacks = None
             _LOGGER.debug("Unsubscribed from notifications")
         except Exception as e:
             _LOGGER.error("Error unsubscribing from notifications: %s", e)
 
-    def _on_notification(self, sender: int, data: bytes) -> None:
-        """Handle incoming notification from watch."""
-        if self._notification_callback:
-            self._notification_callback(data)
+    def _on_notification_n1(self, sender: int, data: bytes) -> None:
+        """Handle incoming notification from CHAR_GENERAL_N_1."""
+        if self._notification_callbacks:
+            self._notification_callbacks.on_general_n1(data)
 
-    async def send_command(self, cmd_data: bytes) -> bool:
-        """Send a command to the watch."""
+    def _on_notification_data2(self, sender: int, data: bytes) -> None:
+        """Handle incoming notification from CHAR_DATA2_N."""
+        if self._notification_callbacks:
+            self._notification_callbacks.on_data2_n(data)
+
+    async def send_command_1(self, cmd_data: bytes) -> bool:
+        """Send a command to the watch via CHAR_GENERAL_RW_1."""
         try:
             if not self._client:
                 _LOGGER.error("Not connected to device")
@@ -141,7 +166,27 @@ class HaylouBLEClient:
                 )
                 return False
 
-            await self._client.write_gatt_char(CHAR_WRITE_UUID, cmd_data)
+            await self._client.write_gatt_char(CHAR_GENERAL_RW_1_UUID, cmd_data)
+            _LOGGER.debug("Sent command: %s", cmd_data.hex())
+            return True
+        except Exception as e:
+            _LOGGER.error("Error sending command: %s", e)
+            return False
+
+    async def send_command_2(self, cmd_data: bytes) -> bool:
+        """Send a command to the watch via CHAR_DATA2_RW."""
+        try:
+            if not self._client:
+                _LOGGER.error("Not connected to device")
+                return False
+
+            if len(cmd_data) > MAX_COMMAND_LENGTH:
+                _LOGGER.error(
+                    "Command too long: %d > %d", len(cmd_data), MAX_COMMAND_LENGTH
+                )
+                return False
+
+            await self._client.write_gatt_char(CHAR_DATA2_RW_UUID, cmd_data)
             _LOGGER.debug("Sent command: %s", cmd_data.hex())
             return True
         except Exception as e:
@@ -151,12 +196,17 @@ class HaylouBLEClient:
     async def request_battery(self) -> bool:
         """Request battery status from watch."""
         cmd = bytes([CMD_ID_BATTERY])
-        return await self.send_command(cmd)
+        return await self.send_command_1(cmd)
 
-    async def request_hbm_status(self) -> bool:
+    async def request_sport_stats(self) -> bool:
+        """Request sport statistics from watch."""
+        cmd = bytes([CMD_ID_SPORT_STATISTICS2, 0x03, 0x01])
+        return await self.send_command_1(cmd)
+
+    async def request_hbm_stats(self) -> bool:
         """Request current HBM status from watch."""
-        cmd = bytes([CMD_ID_HBM_STATUS])
-        return await self.send_command(cmd)
+        cmd = bytes([CMD_ID_HBM_STATUS_REQUEST, 0xFA])
+        return await self.send_command_2(cmd)
 
     async def send_message(
         self, message: str, msg_type: str = "generic"
@@ -193,7 +243,7 @@ class HaylouBLEClient:
                 cmd.extend(batch_data)
 
                 # Send batch
-                if not await self.send_command(bytes(cmd)):
+                if not await self.send_command_1(bytes(cmd)):
                     _LOGGER.error("Failed to send message batch %d", batch_index)
                     return False
 
@@ -206,7 +256,7 @@ class HaylouBLEClient:
             # Send finalization command
             if batch_index > 0:
                 finalize_cmd = bytes([CMD_ID_ALERT_MSG, 0xFD])
-                if not await self.send_command(finalize_cmd):
+                if not await self.send_command_1(finalize_cmd):
                     _LOGGER.error("Failed to finalize message send")
                     return False
 
@@ -223,7 +273,7 @@ class HaylouBLEClient:
             return False
 
         cmd = bytes([CMD_ID_PAIR, 0x02]) + bytes([ord(c) for c in pin])
-        success = await self.send_command(cmd)
+        success = await self.send_command_1(cmd)
         if not success:
             _LOGGER.warning("Failed to send pairing command, but continuing initialization")
         return True  # Don't fail initialization just because send_command returned False
@@ -244,7 +294,7 @@ class HaylouBLEClient:
                 time_to_set.second,
             ]
         )
-        success = await self.send_command(cmd)
+        success = await self.send_command_1(cmd)
         if not success:
             _LOGGER.warning("Failed to send set_time command")
         return True  # Continue initialization even if command fails
@@ -262,7 +312,7 @@ class HaylouBLEClient:
                 0x01 if time_is_24h else 0x02,
             ]
         )
-        success = await self.send_command(cmd)
+        success = await self.send_command_1(cmd)
         if not success:
             _LOGGER.warning("Failed to send set_units command")
         return True  # Continue initialization even if command fails
@@ -292,7 +342,7 @@ class HaylouBLEClient:
                 self._normalize_temperature(min_temperature),
             ]
         )
-        success = await self.send_command(cmd)
+        success = await self.send_command_1(cmd)
         if not success:
             _LOGGER.warning("Failed to send set_weather_today command")
         return True  # Continue initialization even if command fails
@@ -328,7 +378,7 @@ class HaylouBLEClient:
                 self._normalize_temperature(day3_min),
             ]
         )
-        success = await self.send_command(cmd)
+        success = await self.send_command_1(cmd)
         if not success:
             _LOGGER.warning("Failed to send set_weather_next command")
         return True  # Continue initialization even if command fails
@@ -344,23 +394,23 @@ class HaylouBLEClient:
             pairing_key = await self.get_pairing_key()
             if pairing_key:
                 _LOGGER.debug("Pairing key: %s", pairing_key)
-            await asyncio.sleep(0.5)
+#            await asyncio.sleep(0.5)
 
             # Set time
             await self.set_time(datetime.now())
-            await asyncio.sleep(0.5)
+#            await asyncio.sleep(0.5)
 
             # Request battery status
             await self.request_battery()
-            await asyncio.sleep(0.5)
+#            await asyncio.sleep(0.5)
 
             # Set units
             await self.set_units(True, True)
-            await asyncio.sleep(0.5)
+#            await asyncio.sleep(0.5)
 
             # Set weather for today
             await self.set_weather_today(0x09, 8, 10, 5)  # UNKNOWN_S
-            await asyncio.sleep(0.5)
+#            await asyncio.sleep(0.5)
 
             # Set weather for next days
             await self.set_weather_next(
@@ -368,6 +418,11 @@ class HaylouBLEClient:
                 0x01, 13, 9,  # SUNNY
                 0x08, 0, -2   # SNOWY
             )
+
+#            await asyncio.sleep(0.5)
+            await self.request_sport_stats()
+
+            await self.request_hbm_stats()
 
             _LOGGER.info("Watch initialization completed")
             return True
@@ -379,7 +434,7 @@ class HaylouBLEClient:
         """Get the pairing key from the watch."""
         try:
             cmd = bytes([CMD_ID_PAIR, 0x03])
-            if not await self.send_command(cmd):
+            if not await self.send_command_1(cmd):
                 return None
             # Note: In a full implementation, we'd wait for the response
             # For now, just return a placeholder since we don't have response parsing
@@ -388,30 +443,19 @@ class HaylouBLEClient:
             _LOGGER.error("Error getting pairing key: %s", e)
             return None
 
-    def parse_hbm_statistics(self, payload: bytes) -> Optional[dict]:
-        """Parse HBM (heart beat monitor) statistics from notification payload."""
+    def parse_hbm_statistics_general_n1(self, payload: bytes) -> Optional[dict]:
+        """Parse HBM statistics from CHAR_GENERAL_N_1 notification payload."""
         try:
-            if len(payload) < 11:
-                return None
-
-            if payload[0] != CMD_ID_HBM_STATISTICS:
+            if len(payload) < 9 or payload[0] != CMD_ID_HBM_STATISTICS:
                 return None
 
             stat_type = payload[1]
 
             if stat_type == 0x04 and len(payload) >= 11:
-                # Statistics format 1 (includes date/time)
-                year = (payload[2] << 8) | payload[3]
-                month = payload[4]
-                day = payload[5]
-                hour = payload[6]
-                minute = payload[7]
-                # second = payload[8]  # Not used in this format
+                timestamp = HaylouTime.from_payload(payload[2:7]).timestamp()
                 bpm_max = payload[8]
                 bpm_min = payload[9]
                 bpm_avg = payload[10]
-
-                timestamp = datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
 
                 return {
                     "timestamp": timestamp.isoformat(),
@@ -421,16 +465,9 @@ class HaylouBLEClient:
                     "type": "statistics1",
                 }
 
-            elif stat_type == 0x03 and len(payload) >= 9:
-                # Statistics format 2 (different layout)
-                year = (payload[2] << 8) | payload[3]
-                month = payload[4]
-                day = payload[5]
-                hour = payload[6]
-                minute = payload[7]
+            if stat_type == 0x03:
+                timestamp = HaylouTime.from_payload(payload[2:7]).timestamp()
                 bpm = payload[8]
-
-                timestamp = datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
 
                 return {
                     "timestamp": timestamp.isoformat(),
@@ -440,14 +477,112 @@ class HaylouBLEClient:
 
             return None
         except Exception as e:
-            _LOGGER.error("Error parsing HBM statistics: %s", e)
+            _LOGGER.error("Error parsing HBM statistics (general N1): %s", e)
+            return None
+
+    def parse_hbm_statistics_data2_n(self, payload: bytes) -> Optional[dict]:
+        """Parse HBM statistics from CHAR_DATA2_N notification payload."""
+        try:
+            if (
+                len(payload) >= 11
+                and payload[0] == CMD_ID_HBM_STATUS_REQUEST
+                and payload[1] == 0x04
+            ):
+                timestamp = HaylouTime.from_payload(payload[2:7]).timestamp()
+                bpm_max = payload[8]
+                bpm_min = payload[9]
+                bpm_avg = payload[10]
+
+                return {
+                    "timestamp": timestamp.isoformat(),
+                    "bpm_min": bpm_min,
+                    "bpm_avg": bpm_avg,
+                    "bpm_max": bpm_max,
+                    "type": "statistics1",
+                }
+
+            return None
+        except Exception as e:
+            _LOGGER.error("Error parsing HBM statistics (data2 N): %s", e)
+            return None
+
+    def parse_sport_statistics(self, payload: bytes) -> Optional[dict]:
+        """Parse sport statistics (both frame types) from notification payload."""
+        try:
+            if len(payload) < 1:
+                return None
+            if payload[0] == CMD_ID_SPORT_STATISTICS:
+                return self.parse_sport_statistics1(payload)
+            if payload[0] == CMD_ID_SPORT_STATISTICS2:
+                return self.parse_sport_statistics2(payload)
+            return None
+        except Exception as e:
+            _LOGGER.error("Error parsing sports statistics: %s", e)
+            return None
+
+    def parse_sport_statistics1(self, payload: bytes) -> Optional[dict]:
+        """Parse sport statistics (frame type 1) from notification payload."""
+        try:
+            if len(payload) < 18:
+                return None
+
+            time = HaylouTime.from_payload(payload[1:5])
+            steps = (payload[6] << 8) | payload[7]
+            self._steps_counter.set_value_incremental(time, steps)
+
+            return {
+                "steps_count": self._steps_counter.get_value()
+            }
+
+        except Exception as e:
+            _LOGGER.error("Error parsing sports statistics (1): %s", e)
+            return None
+
+    def parse_sport_statistics2(self, payload: bytes) -> Optional[dict]:
+        """Parse sport statistics (frame type 2) from notification payload."""
+        try:
+            if len(payload) == 18:
+                time = HaylouTime.from_payload(payload[1:5])
+                steps = (payload[6] << 8) | payload[7]
+                self._steps_counter.add_value_stored(time, steps)
+
+                return {
+                    "steps_count": self._steps_counter.get_value()
+                }
+            elif (len(payload) == 3) and (payload[1] == 0xFD):
+                self._steps_counter.finish_adding_stored()
+                return {
+                    "steps_count": self._steps_counter.get_value()
+                }
+            else:
+                return None
+
+        except Exception as e:
+            _LOGGER.error("Error parsing sports statistics (2): %s", e)
             return None
 
     def parse_hbm_status(self, payload: bytes) -> Optional[int]:
         """Parse current HBM status from notification payload."""
         try:
-            if len(payload) >= 4 and payload[0] == CMD_ID_HBM_STATUS and payload[1] == 0x11:
-                # HBM extended status response contains BPM in payload[3]
+            if (
+                len(payload) >= 4
+                and payload[0] == CMD_ID_HBM_STATUS
+                and payload[1] == 0x11
+            ):
+                return payload[3]
+            return None
+        except Exception as e:
+            _LOGGER.error("Error parsing HBM status: %s", e)
+            return None
+
+    def parse_hbm_status2(self, payload: bytes) -> Optional[int]:
+        """Parse current HBM status from notification payload."""
+        try:
+            if (
+                len(payload) >= 4
+                and payload[0] == CMD_ID_HBM_STATUS2
+                and payload[1] == 0x11
+            ):
                 return payload[3]
             return None
         except Exception as e:

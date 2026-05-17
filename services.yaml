@@ -2,6 +2,13 @@ send_message:
   name: Send Message
   description: Send a message to the Haylou watch display
   fields:
+    device_address:
+      name: Device address
+      description: MAC address of the watch (required when multiple watches are configured)
+      required: false
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:
     message:
       name: Message
       description: The message text to send
@@ -41,6 +48,3 @@ send_message:
             - "pinterest"
             - "youtube"
 
-request_battery:
-  name: Request Battery
-  description: Request battery status from the Haylou watch

@@ -6,8 +6,8 @@ from datetime import datetime, timezone, timedelta
 
 from homeassistant.components.device_tracker import TrackerEntity, SourceType
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -40,9 +40,10 @@ async def async_setup_entry(
 class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
     """Represent a Haylou watch as a device tracker."""
 
+    _attr_has_entity_name = True
     _attr_icon = "mdi:watch"
     _attr_source_type = SourceType.BLUETOOTH
-    _attr_should_poll = False
+    _attr_name = "Tracker"
 
     def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
         """Initialize the device tracker.
@@ -58,18 +59,7 @@ class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
         self.device_name = device_name
         self.config_entry = config_entry
         self._attr_unique_id = f"{DOMAIN}_{device_address}_tracker"
-        self._attr_name = f"{device_name} Tracker"
         _LOGGER.debug("Initialized HaylouDeviceTracker for %s", device_address)
-
-    @property
-    def latitude(self) -> float | None:
-        """Return latitude - not available for BLE tracker."""
-        return None
-
-    @property
-    def longitude(self) -> float | None:
-        """Return longitude - not available for BLE tracker."""
-        return None
 
     @property
     def location_name(self) -> str | None:
@@ -157,6 +147,7 @@ class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
         """Return device information for the Haylou watch."""
         return {
             "identifiers": {(DOMAIN, self.device_address)},
+            "connections": {(CONNECTION_BLUETOOTH, self.device_address)},
             "name": self.device_name,
             "manufacturer": MANUFACTURER,
             "model": MODEL,

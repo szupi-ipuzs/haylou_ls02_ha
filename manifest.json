@@ -15,7 +15,5 @@
   "issue_tracker": "https://github.com/szupi/haylou_ls02_ha/issues",
   "iot_class": "local_polling",
   "platforms": ["device_tracker", "sensor"],
-  "disabled_by": null,
-  "is_built_in": false,
   "integration_type": "hub"
 }

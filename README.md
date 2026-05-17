@@ -90,14 +90,6 @@ data:
 - `pinterest`
 - `youtube`
 
-### request_battery
-
-Request battery status from the watch.
-
-```yaml
-service: haylou_ls02.request_battery
-```
-
 ## How It Works
 
 This integration uses Home Assistant's native Bluetooth stack (no external dependencies) to communicate with the Haylou Smart Watch 2 via BLE (Bluetooth Low Energy).

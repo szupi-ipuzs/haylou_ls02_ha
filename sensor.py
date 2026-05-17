@@ -12,6 +12,7 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -74,50 +75,63 @@ def _get_forecast_value(forecast: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
-def extract_weather_data(hass: HomeAssistant, entity_id: str) -> dict[str, Any] | None:
-    """Extract today and next day weather data from a weather entity."""
-    if not entity_id:
+def _get_weather_unit(weather_state) -> str | None:
+    """Return the temperature unit configured on a weather entity state."""
+    return weather_state.attributes.get("temperature_unit") or weather_state.attributes.get(
+        "unit_of_measurement"
+    )
+
+
+def _pick_forecast_days(forecast: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Pick today and next-day entries from a forecast list."""
+    if not forecast:
+        return None
+    if len(forecast) >= 2:
+        return forecast[0], forecast[1]
+    return forecast[0], forecast[0]
+
+
+def _build_weather_data(entity_id: str, weather_state, forecast: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Build watch weather payload from entity state and forecast entries."""
+    forecast_days = _pick_forecast_days(forecast)
+    if forecast_days is None:
         return None
 
-    weather_state = hass.states.get(entity_id)
-    if weather_state is None:
-        _LOGGER.debug("Weather entity %s not found", entity_id)
-        return None
-
-    if weather_state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-        _LOGGER.debug("Weather entity %s is unavailable or unknown", entity_id)
-        return None
-
-    weather_unit = weather_state.attributes.get("temperature_unit") or weather_state.attributes.get("unit_of_measurement")
+    today_forecast, next_forecast = forecast_days
+    weather_unit = _get_weather_unit(weather_state)
     current_temperature = _convert_to_celsius(
         weather_state.attributes.get(ATTR_TEMPERATURE), weather_unit
     )
 
-    forecast = weather_state.attributes.get("forecast") or []
-    if not isinstance(forecast, list) or len(forecast) < 2:
-        _LOGGER.debug("Weather entity %s does not contain enough forecast data", entity_id)
-        return None
-
-    today_forecast = forecast[0]
-    next_forecast = forecast[1]
-
     today_max = _convert_to_celsius(
-        _get_forecast_value(today_forecast, ("temperature", "temp", "high", "high_temp")),
+        _get_forecast_value(
+            today_forecast,
+            ("temperature", "temp", "high", "high_temp", "native_temperature"),
+        ),
         weather_unit,
     )
     today_min = _convert_to_celsius(
-        _get_forecast_value(today_forecast, ("templow", "temperature_low", "low")),
+        _get_forecast_value(
+            today_forecast,
+            ("templow", "temperature_low", "low", "native_templow"),
+        ),
         weather_unit,
     )
     today_condition = _get_forecast_value(today_forecast, ("condition",)) or weather_state.state
     today_type = _map_condition_to_watch_type(today_condition)
 
     next_max = _convert_to_celsius(
-        _get_forecast_value(next_forecast, ("temperature", "temp", "high", "high_temp")),
+        _get_forecast_value(
+            next_forecast,
+            ("temperature", "temp", "high", "high_temp", "native_temperature"),
+        ),
         weather_unit,
     )
     next_min = _convert_to_celsius(
-        _get_forecast_value(next_forecast, ("templow", "temperature_low", "low")),
+        _get_forecast_value(
+            next_forecast,
+            ("templow", "temperature_low", "low", "native_templow"),
+        ),
         weather_unit,
     )
     next_condition = _get_forecast_value(next_forecast, ("condition",))
@@ -146,6 +160,96 @@ def extract_weather_data(hass: HomeAssistant, entity_id: str) -> dict[str, Any] 
             "max_temperature": next_max,
         },
     }
+
+
+async def async_fetch_weather_forecast(hass: HomeAssistant, entity_id: str) -> list[dict[str, Any]] | None:
+    """Fetch daily forecast entries for a weather entity."""
+    weather_state = hass.states.get(entity_id)
+    if weather_state is None:
+        return None
+
+    legacy_forecast = weather_state.attributes.get("forecast")
+    if isinstance(legacy_forecast, list) and legacy_forecast:
+        return legacy_forecast
+
+    try:
+        from homeassistant.components.weather import (
+            DATA_COMPONENT,
+            WeatherEntity,
+            WeatherEntityFeature,
+        )
+        from homeassistant.helpers.entity_component import EntityComponent
+    except ImportError:
+        return None
+
+    component: EntityComponent[WeatherEntity] | None = hass.data.get(DATA_COMPONENT)
+    if component is None:
+        return None
+
+    entity = component.get_entity(entity_id)
+    if entity is None:
+        return None
+
+    supported_features = entity.supported_features or 0
+    native_forecast = None
+
+    if supported_features & WeatherEntityFeature.FORECAST_DAILY:
+        native_forecast = await entity.async_forecast_daily()
+    elif supported_features & WeatherEntityFeature.FORECAST_TWICE_DAILY:
+        native_forecast = await entity.async_forecast_twice_daily()
+    elif supported_features & WeatherEntityFeature.FORECAST_HOURLY:
+        native_forecast = await entity.async_forecast_hourly()
+
+    if not native_forecast:
+        return None
+
+    converted = entity._convert_forecast(native_forecast)  # noqa: SLF001
+    if not isinstance(converted, list):
+        return None
+    return converted
+
+
+async def async_extract_weather_data(hass: HomeAssistant, entity_id: str) -> dict[str, Any] | None:
+    """Extract today and next day weather data from a weather entity."""
+    if not entity_id:
+        return None
+
+    weather_state = hass.states.get(entity_id)
+    if weather_state is None:
+        _LOGGER.debug("Weather entity %s not found", entity_id)
+        return None
+
+    if weather_state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+        _LOGGER.debug("Weather entity %s is unavailable or unknown", entity_id)
+        return None
+
+    forecast = await async_fetch_weather_forecast(hass, entity_id)
+    if not isinstance(forecast, list) or not forecast:
+        _LOGGER.debug("Weather entity %s does not contain forecast data", entity_id)
+        return None
+
+    return _build_weather_data(entity_id, weather_state, forecast)
+
+
+def extract_weather_data(hass: HomeAssistant, entity_id: str) -> dict[str, Any] | None:
+    """Extract weather data using the legacy forecast state attribute."""
+    if not entity_id:
+        return None
+
+    weather_state = hass.states.get(entity_id)
+    if weather_state is None:
+        _LOGGER.debug("Weather entity %s not found", entity_id)
+        return None
+
+    if weather_state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+        _LOGGER.debug("Weather entity %s is unavailable or unknown", entity_id)
+        return None
+
+    forecast = weather_state.attributes.get("forecast") or []
+    if not isinstance(forecast, list) or not forecast:
+        return None
+
+    return _build_weather_data(entity_id, weather_state, forecast)
 
 
 async def async_setup_entry(
@@ -180,32 +284,31 @@ async def async_setup_entry(
         HaylouWeatherSourceSensor(
             coordinator, device_address, device_name, config_entry
         ),
+        HaylouStepsSensor(
+            coordinator, device_address, device_name, config_entry
+        ),
     ]
     async_add_entities(entities)
 
 
-class HaylouHeartRateCurrentSensor(CoordinatorEntity, SensorEntity):
-    """Represent Haylou watch current heart rate as a sensor."""
+class HaylouSensorEntity(CoordinatorEntity, SensorEntity):
+    """Base class for Haylou watch sensors."""
 
-    _attr_icon = "mdi:heart-pulse"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = "bpm"
+    _attr_has_entity_name = True
     _attr_should_poll = False
 
-    def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
+    def __init__(
+        self,
+        coordinator,
+        device_address: str,
+        device_name: str,
+        config_entry: ConfigEntry,
+    ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
         self.device_address = device_address
         self.device_name = device_name
         self.config_entry = config_entry
-        self._attr_unique_id = f"{DOMAIN}_{device_address}_heartrate_current"
-        self._attr_name = f"{device_name} Heart Rate Current"
-        self._attr_entity_id = f"sensor.haylou_ls02_heartrate_current_{device_address.replace(':', '')}"
-
-    @property
-    def native_value(self) -> int | None:
-        """Return the current heart rate value."""
-        return self.coordinator.data.get("current_heart_rate")
 
     @property
     def device_info(self) -> dict[str, Any]:
@@ -228,23 +331,37 @@ class HaylouHeartRateCurrentSensor(CoordinatorEntity, SensorEntity):
         self.async_write_ha_state()
 
 
-class HaylouHeartRateMaxSensor(CoordinatorEntity, SensorEntity):
+class HaylouHeartRateCurrentSensor(HaylouSensorEntity):
+    """Represent Haylou watch current heart rate as a sensor."""
+
+    _attr_icon = "mdi:heart-pulse"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "bpm"
+
+    def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
+        """Initialize the sensor."""
+        super().__init__(coordinator, device_address, device_name, config_entry)
+        self._attr_unique_id = f"{DOMAIN}_{device_address}_heartrate_current"
+        self._attr_name = "Heart Rate Current"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the current heart rate value."""
+        return self.coordinator.data.get("current_heart_rate")
+
+
+class HaylouHeartRateMaxSensor(HaylouSensorEntity):
     """Represent Haylou watch maximum heart rate as a sensor."""
 
     _attr_icon = "mdi:heart-pulse"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "bpm"
-    _attr_should_poll = False
 
     def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self.device_address = device_address
-        self.device_name = device_name
-        self.config_entry = config_entry
+        super().__init__(coordinator, device_address, device_name, config_entry)
         self._attr_unique_id = f"{DOMAIN}_{device_address}_heartrate_max"
-        self._attr_name = f"{device_name} Heart Rate Max"
-        self._attr_entity_id = f"sensor.haylou_ls02_heartrate_max_{device_address.replace(':', '')}"
+        self._attr_name = "Heart Rate Max"
 
     @property
     def native_value(self) -> int | None:
@@ -253,50 +370,24 @@ class HaylouHeartRateMaxSensor(CoordinatorEntity, SensorEntity):
         if hbm_stats is None:
             return None
 
-        # Return max BPM
         if "bpm_max" in hbm_stats:
             return hbm_stats["bpm_max"]
 
         return None
 
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information for the Haylou watch."""
-        return {
-            "identifiers": {(DOMAIN, self.device_address)},
-            "name": self.device_name,
-            "manufacturer": MANUFACTURER,
-            "model": MODEL,
-        }
 
-    async def async_added_to_hass(self) -> None:
-        """When entity is added to Home Assistant."""
-        await super().async_added_to_hass()
-        self._handle_coordinator_update()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()
-
-
-class HaylouHeartRateMinSensor(CoordinatorEntity, SensorEntity):
+class HaylouHeartRateMinSensor(HaylouSensorEntity):
     """Represent Haylou watch minimum heart rate as a sensor."""
 
     _attr_icon = "mdi:heart-pulse"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "bpm"
-    _attr_should_poll = False
 
     def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self.device_address = device_address
-        self.device_name = device_name
-        self.config_entry = config_entry
+        super().__init__(coordinator, device_address, device_name, config_entry)
         self._attr_unique_id = f"{DOMAIN}_{device_address}_heartrate_min"
-        self._attr_name = f"{device_name} Heart Rate Min"
-        self._attr_entity_id = f"sensor.haylou_ls02_heartrate_min_{device_address.replace(':', '')}"
+        self._attr_name = "Heart Rate Min"
 
     @property
     def native_value(self) -> int | None:
@@ -305,50 +396,24 @@ class HaylouHeartRateMinSensor(CoordinatorEntity, SensorEntity):
         if hbm_stats is None:
             return None
 
-        # Return min BPM
         if "bpm_min" in hbm_stats:
             return hbm_stats["bpm_min"]
 
         return None
 
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information for the Haylou watch."""
-        return {
-            "identifiers": {(DOMAIN, self.device_address)},
-            "name": self.device_name,
-            "manufacturer": MANUFACTURER,
-            "model": MODEL,
-        }
 
-    async def async_added_to_hass(self) -> None:
-        """When entity is added to Home Assistant."""
-        await super().async_added_to_hass()
-        self._handle_coordinator_update()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()
-
-
-class HaylouHeartRateAverageSensor(CoordinatorEntity, SensorEntity):
+class HaylouHeartRateAverageSensor(HaylouSensorEntity):
     """Represent Haylou watch average heart rate as a sensor."""
 
     _attr_icon = "mdi:heart-pulse"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "bpm"
-    _attr_should_poll = False
 
     def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self.device_address = device_address
-        self.device_name = device_name
-        self.config_entry = config_entry
+        super().__init__(coordinator, device_address, device_name, config_entry)
         self._attr_unique_id = f"{DOMAIN}_{device_address}_heartrate_average"
-        self._attr_name = f"{device_name} Heart Rate Average"
-        self._attr_entity_id = f"sensor.haylou_ls02_heartrate_average_{device_address.replace(':', '')}"
+        self._attr_name = "Heart Rate Average"
 
     @property
     def native_value(self) -> int | None:
@@ -357,137 +422,90 @@ class HaylouHeartRateAverageSensor(CoordinatorEntity, SensorEntity):
         if hbm_stats is None:
             return None
 
-        # Return average BPM
         if "bpm_avg" in hbm_stats:
             return hbm_stats["bpm_avg"]
 
         return None
 
+
+class HaylouStepsSensor(HaylouSensorEntity):
+    """Represent Haylou watch steps count as a sensor."""
+
+    _attr_icon = "mdi:shoe-print"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "steps"
+
+    def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
+        """Initialize the sensor."""
+        super().__init__(coordinator, device_address, device_name, config_entry)
+        self._attr_unique_id = f"{DOMAIN}_{device_address}_steps"
+        self._attr_name = "Steps"
+
     @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information for the Haylou watch."""
-        return {
-            "identifiers": {(DOMAIN, self.device_address)},
-            "name": self.device_name,
-            "manufacturer": MANUFACTURER,
-            "model": MODEL,
-        }
+    def native_value(self) -> int | None:
+        """Return the steps count."""
+        sport_stats = self.coordinator.data.get("sport_stats")
+        if sport_stats is None:
+            return None
 
-    async def async_added_to_hass(self) -> None:
-        """When entity is added to Home Assistant."""
-        await super().async_added_to_hass()
-        self._handle_coordinator_update()
+        if "steps_count" in sport_stats:
+            return sport_stats["steps_count"]
 
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()
+        return None
 
 
-class HaylouBatteryLevelSensor(CoordinatorEntity, SensorEntity):
+class HaylouBatteryLevelSensor(HaylouSensorEntity):
     """Represent current Haylou watch battery level as a sensor."""
 
     _attr_icon = "mdi:battery"
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "%"
-    _attr_should_poll = False
 
     def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self.device_address = device_address
-        self.device_name = device_name
-        self.config_entry = config_entry
+        super().__init__(coordinator, device_address, device_name, config_entry)
         self._attr_unique_id = f"{DOMAIN}_{device_address}_battery_level"
-        self._attr_name = f"{device_name} Battery Level"
-        self._attr_entity_id = f"sensor.haylou_ls02_battery_level_{device_address.replace(':', '')}"
+        self._attr_name = "Battery Level"
 
     @property
     def native_value(self) -> int | None:
         """Return the current battery level."""
         return self.coordinator.data.get("battery")
 
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information for the Haylou watch."""
-        return {
-            "identifiers": {(DOMAIN, self.device_address)},
-            "name": self.device_name,
-            "manufacturer": MANUFACTURER,
-            "model": MODEL,
-        }
 
-    async def async_added_to_hass(self) -> None:
-        """When entity is added to Home Assistant."""
-        await super().async_added_to_hass()
-        self._handle_coordinator_update()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()
-
-
-class HaylouConnectionStatusSensor(CoordinatorEntity, SensorEntity):
+class HaylouConnectionStatusSensor(HaylouSensorEntity):
     """Represent Haylou watch BLE connection status as a diagnostic sensor."""
 
     _attr_icon = "mdi:watch"
-    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self.device_address = device_address
-        self.device_name = device_name
-        self.config_entry = config_entry
+        super().__init__(coordinator, device_address, device_name, config_entry)
         self._attr_unique_id = f"{DOMAIN}_{device_address}_connection_status"
-        self._attr_name = f"{device_name} Connection Status"
-        self._attr_entity_id = f"sensor.haylou_ls02_connection_status_{device_address.replace(':', '')}"
+        self._attr_name = "Connection Status"
 
     @property
     def native_value(self) -> str | None:
         """Return the connection status."""
         return self.coordinator.data.get("connection_state", "disconnected")
 
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information for the Haylou watch."""
-        return {
-            "identifiers": {(DOMAIN, self.device_address)},
-            "name": self.device_name,
-            "manufacturer": MANUFACTURER,
-            "model": MODEL,
-        }
 
-    async def async_added_to_hass(self) -> None:
-        """When entity is added to Home Assistant."""
-        await super().async_added_to_hass()
-        self._handle_coordinator_update()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()
-
-
-class HaylouWeatherSourceSensor(CoordinatorEntity, SensorEntity):
+class HaylouWeatherSourceSensor(HaylouSensorEntity):
     """Represent an external weather source selected by the user."""
 
     _attr_icon = "mdi:weather-partly-cloudy"
     _attr_native_unit_of_measurement = "°C"
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self.device_address = device_address
-        self.device_name = device_name
-        self.config_entry = config_entry
+        super().__init__(coordinator, device_address, device_name, config_entry)
+        self._weather_cache: dict[str, Any] | None = None
         self._attr_unique_id = f"{DOMAIN}_{device_address}_weather_source"
-        self._attr_name = f"{device_name} Weather Source"
-        self._attr_entity_id = f"sensor.haylou_ls02_weather_source_{device_address.replace(':', '')}"
+        self._attr_name = "Weather Source"
 
     @property
     def native_value(self) -> float | None:
@@ -520,30 +538,53 @@ class HaylouWeatherSourceSensor(CoordinatorEntity, SensorEntity):
 
         return attributes
 
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device information for the Haylou watch."""
-        return {
-            "identifiers": {(DOMAIN, self.device_address)},
-            "name": self.device_name,
-            "manufacturer": MANUFACTURER,
-            "model": MODEL,
-        }
-
     def _get_external_weather_data(self) -> dict[str, Any]:
         """Read weather data from the selected weather entity."""
-        entity_id = self.config_entry.options.get(CONF_WEATHER_SOURCE)
+        entity_id = self.config_entry.options.get(
+            CONF_WEATHER_SOURCE,
+            self.config_entry.data.get(CONF_WEATHER_SOURCE),
+        )
+        if self._weather_cache is not None:
+            return self._weather_cache
+        cached = getattr(self.coordinator, "_cached_weather", None)
+        if cached is not None:
+            return cached
         weather_data = extract_weather_data(self.hass, entity_id)
         if weather_data is None:
             return {"today": {}, "next": {}, "entity_id": entity_id}
         return weather_data
 
+    async def _async_refresh_weather_cache(self) -> None:
+        """Refresh cached weather data from the configured source entity."""
+        entity_id = self.config_entry.options.get(
+            CONF_WEATHER_SOURCE,
+            self.config_entry.data.get(CONF_WEATHER_SOURCE),
+        )
+        if not entity_id:
+            return
+        weather_data = await async_extract_weather_data(self.hass, entity_id)
+        if weather_data is not None:
+            self._weather_cache = weather_data
+            self.async_write_ha_state()
+
     async def async_added_to_hass(self) -> None:
         """When entity is added to Home Assistant."""
         await super().async_added_to_hass()
-        self._handle_coordinator_update()
+        entity_id = self.config_entry.options.get(
+            CONF_WEATHER_SOURCE,
+            self.config_entry.data.get(CONF_WEATHER_SOURCE),
+        )
+        if entity_id:
+            from homeassistant.helpers.event import async_track_state_change_event
 
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()
+            @callback
+            def _weather_source_changed(event) -> None:
+                self.hass.async_create_task(self._async_refresh_weather_cache())
+
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, [entity_id], _weather_source_changed
+                )
+            )
+            await self._async_refresh_weather_cache()
+        self._handle_coordinator_update()

@@ -66,10 +66,6 @@
           "description": "Type of message (phone_call, whatsapp, email, etc.)"
         }
       }
-    },
-    "request_battery": {
-      "name": "Request Battery Status",
-      "description": "Request battery status from the watch"
     }
   }
 }

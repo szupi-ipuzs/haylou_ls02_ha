@@ -5,8 +5,8 @@ from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -34,9 +34,11 @@ async def async_setup_entry(
 class HaylouConnectionStateSensor(CoordinatorEntity, SensorEntity):
     """Represent Haylou watch connection state as a diagnostic sensor."""
 
+    _attr_has_entity_name = True
     _attr_icon = "mdi:bluetooth"
     _attr_should_poll = False
-    _attr_entity_category = "diagnostic"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_name = "Connection State"
 
     def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
         """Initialize the diagnostic sensor."""
@@ -45,8 +47,6 @@ class HaylouConnectionStateSensor(CoordinatorEntity, SensorEntity):
         self.device_name = device_name
         self.config_entry = config_entry
         self._attr_unique_id = f"{DOMAIN}_{device_address}_connection_state"
-        self._attr_name = f"{device_name} Connection State"
-        self._attr_entity_id = f"sensor.haylou_ls02_connection_state_{device_address.replace(':', '')}"
 
     @property
     def native_value(self) -> str:
