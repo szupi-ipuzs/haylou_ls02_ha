@@ -89,6 +89,7 @@ class HaylouSteps:
         """Set initial values"""
         self._counters = []
         self._finished_adding = True
+        self._last_returned_value = 0
 
     def set_value_incremental(self, time: HaylouTime, steps: int):
         if not self._counters:
@@ -110,9 +111,12 @@ class HaylouSteps:
         self._finished_adding = True
 
     def get_value(self, time: datetime) -> int:
+        if not self._finished_adding:
+            return self._last_returned_value
         haylou_time = HaylouTime.from_datetime(time)
         total_steps_for_day = 0
         for counter in self._counters:
             if counter.time.is_same_day(haylou_time):
                 total_steps_for_day += counter.steps
+        self._last_returned_value = total_steps_for_day
         return total_steps_for_day

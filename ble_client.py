@@ -11,6 +11,7 @@ from .helpers import HaylouTime, HaylouSteps
 
 from .const import (
     CMD_ID_HBM_STATUS2,
+    CMD_ID_USER_INFO,
     SERVICE_1_UUID,
     SERVICE_2_UUID,
     CHAR_GENERAL_RW_1_UUID,
@@ -412,15 +413,52 @@ class HaylouBLEClient:
             _LOGGER.warning("Failed to send set_weather_next command")
         return True  # Continue initialization even if command fails
 
-    async def initialize_watch(self) -> bool:
+    async def set_user_info(
+        self,
+        height_cm: int,
+        weight_kg: int,
+        screen_show_timeout_seconds: int,
+        step_goal: int,
+        lift_wrist_mode_on: bool,
+        age: int,
+        gender_male: bool,
+    ) -> bool:
+        """Set the user info on the watch."""
+        cmd = bytes(
+            [
+                CMD_ID_USER_INFO,
+                0x00,
+                height_cm,
+                0x00,
+                weight_kg,
+                screen_show_timeout_seconds,
+                0x00, 0x00,
+                (step_goal >> 8) & 0xFF, step_goal & 0xFF,
+                0x01 if lift_wrist_mode_on else 0x00,
+                0xA0, 0x00,
+                age,
+                0x01 if gender_male else 0x02,
+            ]
+        )
+        success = await self.send_command_1(cmd)
+        if not success:
+            _LOGGER.warning("Failed to send set_user_info command")
+        return True  # Continue initialization even if command fails
+
+    async def initialize_watch(
+        self,
+        pairing_pin: str = "1234",
+        distance_is_metric: bool = True,
+        time_is_24h: bool = True,
+    ) -> bool:
         """Perform the same initialization sequence as the C++ watch client."""
         try:
             # Pair with the watch
-            await self.pair("1234")
+            await self.pair(pairing_pin)
             await asyncio.sleep(1.0)  # Wait for pairing response
 
             # Get pairing key (like C++ client does)
-            pairing_key = await self.get_pairing_key()
+            pairing_key = await self.get_pairing_key(pairing_pin)
             if pairing_key:
                 _LOGGER.debug("Pairing key: %s", pairing_key)
             await asyncio.sleep(0.2)
@@ -434,7 +472,7 @@ class HaylouBLEClient:
             await asyncio.sleep(0.2)
 
             # Set units
-            await self.set_units(True, True)
+            await self.set_units(distance_is_metric, time_is_24h)
             await asyncio.sleep(0.2)
 
             await self.request_sport_stats()
@@ -451,7 +489,7 @@ class HaylouBLEClient:
             _LOGGER.error("Error initializing watch: %s", e)
             return False
 
-    async def get_pairing_key(self) -> Optional[str]:
+    async def get_pairing_key(self, pin: str) -> Optional[str]:
         """Get the pairing key from the watch."""
         try:
             cmd = bytes([CMD_ID_PAIR, 0x03])
@@ -459,7 +497,7 @@ class HaylouBLEClient:
                 return None
             # Note: In a full implementation, we'd wait for the response
             # For now, just return a placeholder since we don't have response parsing
-            return "1234"  # The PIN we used
+            return pin  # The PIN we used
         except Exception as e:
             _LOGGER.error("Error getting pairing key: %s", e)
             return None

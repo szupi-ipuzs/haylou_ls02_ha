@@ -17,20 +17,46 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     BLE_PRESENCE_TIMEOUT_MINUTES,
+    BLE_PRESENCE_UPDATE_THROTTLE_SECONDS,
+    CONF_DISTANCE_UNIT,
     CONF_DEVICE_ADDRESS,
+    CONF_LIFT_WRIST_MODE,
+    CONF_PAIRING_PIN,
+    CONF_SCREEN_SHOW_TIMEOUT_SECONDS,
+    CONF_STEP_GOAL,
+    CONF_TIME_FORMAT,
+    CONF_USER_AGE,
+    CONF_USER_GENDER,
+    CONF_USER_HEIGHT_CM,
+    CONF_USER_WEIGHT_KG,
     CONF_WEATHER_SOURCE,
     CMD_ID_SPORT_STATISTICS2,
+    DEFAULT_DISTANCE_UNIT,
+    DEFAULT_LIFT_WRIST_MODE,
+    DEFAULT_PAIRING_PIN,
+    DEFAULT_SCREEN_SHOW_TIMEOUT_SECONDS,
+    DEFAULT_STEP_GOAL,
+    DEFAULT_TIME_FORMAT,
+    DEFAULT_USER_AGE,
+    DEFAULT_USER_GENDER,
+    DEFAULT_USER_HEIGHT_CM,
+    DEFAULT_USER_WEIGHT_KG,
+    DISTANCE_UNIT_IMPERIAL,
     DOMAIN,
+    LIFT_WRIST_MODE_OFF,
     SERVICE_SEND_MESSAGE,
     SPORT_STATS2_END_MARKER,
+    SPORT_STATS2_MAX_CONSECUTIVE_RETRIES,
     SPORT_STATS2_RETRY_TIMEOUT_SECONDS,
+    TIME_FORMAT_12H,
+    USER_GENDER_FEMALE,
 )
 from .ble_client import HaylouBLEClient, NotificationCallbacks
 from .sensor import NEXT_FORECAST_DAYS, async_extract_weather_data
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["device_tracker", "sensor"]
+PLATFORMS = ["device_tracker", "sensor", "select", "number"]
 
 _DEFAULT_NEXT_DAY = {
     "weather_type": 1,
@@ -88,8 +114,11 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         self._sport_stats2_timeout_task: Optional[asyncio.Task] = None
         self._sport_stats2_in_progress = False
         self._sport_stats2_retry_pending = False
+        self._sport_stats2_consecutive_retries = 0
         self._bluetooth_unsub = None
         self._cached_weather: dict[str, Any] | None = None
+        self._last_presence_update_sent: datetime | None = None
+        self._last_pairing_pin = self._pairing_pin()
         self._running = True
 
     async def _async_update_data(self):
@@ -97,6 +126,107 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         if not await self.ble_client.request_battery():
             raise UpdateFailed("Failed to request battery status")
         return self.data
+
+    def _time_is_24h(self) -> bool:
+        """Return whether the watch should use a 24-hour time format."""
+        return (
+            self.config_entry.options.get(CONF_TIME_FORMAT, DEFAULT_TIME_FORMAT)
+            != TIME_FORMAT_12H
+        )
+
+    def _distance_is_metric(self) -> bool:
+        """Return whether the watch should use metric distance units."""
+        return (
+            self.config_entry.options.get(CONF_DISTANCE_UNIT, DEFAULT_DISTANCE_UNIT)
+            != DISTANCE_UNIT_IMPERIAL
+        )
+
+    def _pairing_pin(self) -> str:
+        """Return the configured pairing PIN."""
+        pin = str(self.config_entry.options.get(CONF_PAIRING_PIN, DEFAULT_PAIRING_PIN))
+        if len(pin) != 4 or not pin.isdigit():
+            _LOGGER.warning("Invalid pairing PIN configured, falling back to default")
+            return DEFAULT_PAIRING_PIN
+        return pin
+
+    async def async_set_watch_units(self) -> None:
+        """Push configured unit preferences to the watch when connected."""
+        if not self.ble_client.is_connected():
+            _LOGGER.debug("Skipping unit update because watch is not connected")
+            return
+
+        await self.ble_client.set_units(
+            distance_is_metric=self._distance_is_metric(),
+            time_is_24h=self._time_is_24h(),
+        )
+
+    def _user_height_cm(self) -> int:
+        """Return configured user height in centimeters."""
+        return int(
+            self.config_entry.options.get(
+                CONF_USER_HEIGHT_CM,
+                DEFAULT_USER_HEIGHT_CM,
+            )
+        )
+
+    def _user_weight_kg(self) -> int:
+        """Return configured user weight in kilograms."""
+        return int(
+            self.config_entry.options.get(
+                CONF_USER_WEIGHT_KG,
+                DEFAULT_USER_WEIGHT_KG,
+            )
+        )
+
+    def _user_age(self) -> int:
+        """Return configured user age."""
+        return int(self.config_entry.options.get(CONF_USER_AGE, DEFAULT_USER_AGE))
+
+    def _screen_show_timeout_seconds(self) -> int:
+        """Return configured screen timeout in seconds."""
+        return int(
+            self.config_entry.options.get(
+                CONF_SCREEN_SHOW_TIMEOUT_SECONDS,
+                DEFAULT_SCREEN_SHOW_TIMEOUT_SECONDS,
+            )
+        )
+
+    def _step_goal(self) -> int:
+        """Return configured daily step goal."""
+        return int(self.config_entry.options.get(CONF_STEP_GOAL, DEFAULT_STEP_GOAL))
+
+    def _user_gender_male(self) -> bool:
+        """Return whether the configured user gender is male."""
+        return (
+            self.config_entry.options.get(CONF_USER_GENDER, DEFAULT_USER_GENDER)
+            != USER_GENDER_FEMALE
+        )
+
+    def _lift_wrist_mode_on(self) -> bool:
+        """Return whether lift wrist mode is enabled."""
+        return (
+            self.config_entry.options.get(
+                CONF_LIFT_WRIST_MODE,
+                DEFAULT_LIFT_WRIST_MODE,
+            )
+            != LIFT_WRIST_MODE_OFF
+        )
+
+    async def async_set_user_info(self) -> None:
+        """Push configured user info to the watch when connected."""
+        if not self.ble_client.is_connected():
+            _LOGGER.debug("Skipping user info update because watch is not connected")
+            return
+
+        await self.ble_client.set_user_info(
+            height_cm=self._user_height_cm(),
+            weight_kg=self._user_weight_kg(),
+            screen_show_timeout_seconds=self._screen_show_timeout_seconds(),
+            step_goal=self._step_goal(),
+            lift_wrist_mode_on=self._lift_wrist_mode_on(),
+            age=self._user_age(),
+            gender_male=self._user_gender_male(),
+        )
 
     async def _get_weather_payload(self) -> dict[str, Any]:
         """Fetch the current weather and next-day forecast from HA."""
@@ -183,24 +313,71 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         """Periodic weather refresh task while connected."""
         while self._running:
             try:
-                await self._get_weather_payload()
-                if self.data["connection_state"] != "connected":
-                    continue
-                await self._send_weather_to_watch()
+                if self.data["connection_state"] == "connected":
+                    await self._get_weather_payload()
+                    await self._send_weather_to_watch()
             except Exception as err:  # pylint: disable=broad-except
                 _LOGGER.debug("Weather refresh failed: %s", err)
             await asyncio.sleep(15 * 60)
 
     async def _async_initialize_watch_and_weather(self) -> bool:
         """Initialize the watch and push the configured weather forecast."""
-        if not await self.ble_client.initialize_watch():
+        if not await self.ble_client.initialize_watch(
+            pairing_pin=self._pairing_pin(),
+            distance_is_metric=self._distance_is_metric(),
+            time_is_24h=self._time_is_24h(),
+        ):
             return False
+
+        await self.async_set_user_info()
 
         # Fetch a fresh forecast after each connect/reconnect.
         self._cached_weather = None
         await self._get_weather_payload()
         await self._send_weather_to_watch()
         return True
+
+    async def async_reconnect_now(self) -> None:
+        """Disconnect and immediately reconnect using current config options."""
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
+            self._reconnect_task = None
+
+        self.data["connection_state"] = "disconnected"
+        self.async_set_updated_data(self.data)
+        await self.ble_client.disconnect()
+
+        self.data["connection_state"] = "connecting"
+        self.async_set_updated_data(self.data)
+
+        if not await self.ble_client.connect():
+            _LOGGER.warning("Failed to reconnect after pairing PIN change")
+            self._reconnect_task = asyncio.create_task(self._ensure_connected())
+            return
+
+        if not await self.ble_client.subscribe_notifications(
+            self._notification_callbacks()
+        ):
+            _LOGGER.warning("Failed to subscribe after pairing PIN change")
+            await self.ble_client.disconnect()
+            self._reconnect_task = asyncio.create_task(self._ensure_connected())
+            return
+
+        if not await self._async_initialize_watch_and_weather():
+            _LOGGER.warning("Failed to initialize after pairing PIN change")
+            await self.ble_client.disconnect()
+            self._reconnect_task = asyncio.create_task(self._ensure_connected())
+            return
+
+        self.data["connection_state"] = "connected"
+        self.data["last_ble_detected"] = datetime.now(timezone.utc)
+        self.last_update_success = True
+        self.async_set_updated_data(self.data)
+        self._reconnect_task = asyncio.create_task(self._ensure_connected())
 
     async def async_config_entry_first_refresh(self) -> None:
         """First refresh when config entry is set up."""
@@ -254,10 +431,21 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         )
 
     @callback
-    def _mark_ble_detected(self) -> None:
+    def _mark_ble_detected(self, notify: bool = True) -> None:
         """Record that the watch was seen via BLE (connection or scan)."""
-        self.data["last_ble_detected"] = datetime.now(timezone.utc)
-        self.async_set_updated_data(self.data)
+        now = datetime.now(timezone.utc)
+        self.data["last_ble_detected"] = now
+        should_notify = (
+            notify
+            and (
+                self._last_presence_update_sent is None
+                or (now - self._last_presence_update_sent).total_seconds()
+                >= BLE_PRESENCE_UPDATE_THROTTLE_SECONDS
+            )
+        )
+        if should_notify:
+            self._last_presence_update_sent = now
+            self.async_set_updated_data(self.data)
 
     def _async_setup_ble_presence(self) -> None:
         """Listen for passive BLE advertisements from the watch."""
@@ -278,19 +466,21 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         )
 
     @callback
-    def _poll_ble_presence(self) -> None:
+    def _poll_ble_presence(self) -> bool:
         """Update last seen time if the watch is visible to the BLE stack."""
         address = self.ble_client.device_address
         if bluetooth.async_address_present(self.hass, address):
             self._mark_ble_detected()
+            return True
+        return False
 
     async def _presence_update_loop(self) -> None:
         """Refresh coordinator so device tracker re-evaluates the 10-minute timeout."""
         while self._running:
             try:
                 if self.data.get("connection_state") != "connected":
-                    self._poll_ble_presence()
-                    self.async_set_updated_data(self.data)
+                    if not self._poll_ble_presence():
+                        self.async_set_updated_data(self.data)
             except Exception as err:  # pylint: disable=broad-except
                 _LOGGER.debug("Presence refresh failed: %s", err)
             await asyncio.sleep(30)
@@ -300,7 +490,7 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         _LOGGER.debug(
             "Received notification from %s: %s", characteristic, payload.hex()
         )
-        self._mark_ble_detected()
+        self._mark_ble_detected(notify=False)
 
     def _is_sport_stats2_payload(self, payload: bytes) -> bool:
         """Return True if this notification is a sport statistics 2 frame."""
@@ -322,9 +512,11 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             self._retry_sport_stats_after_timeout()
         )
 
-    def _cancel_sport_stats2_timeout(self) -> None:
+    def _cancel_sport_stats2_timeout(self, reset_retry_count: bool = False) -> None:
         """Cancel pending sport statistics 2 retry state."""
         self._sport_stats2_in_progress = False
+        if reset_retry_count:
+            self._sport_stats2_consecutive_retries = 0
         if (
             self._sport_stats2_timeout_task
             and not self._sport_stats2_timeout_task.done()
@@ -348,8 +540,19 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         if self._sport_stats2_retry_pending:
             return
 
+        if (
+            self._sport_stats2_consecutive_retries
+            >= SPORT_STATS2_MAX_CONSECUTIVE_RETRIES
+        ):
+            _LOGGER.warning(
+                "Not re-requesting sport statistics after %d consecutive retries",
+                self._sport_stats2_consecutive_retries,
+            )
+            return
+
         self._sport_stats2_retry_pending = True
         try:
+            self._sport_stats2_consecutive_retries += 1
             _LOGGER.warning("Re-requesting sport statistics: %s", reason)
             self.ble_client.reset_steps_counter()
             if not await self.ble_client.request_sport_stats():
@@ -361,7 +564,7 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         """Track incomplete sport statistics 2 bursts on the N1 channel."""
         if self._is_sport_stats2_payload(payload):
             if self._is_sport_stats2_end_payload(payload):
-                self._cancel_sport_stats2_timeout()
+                self._cancel_sport_stats2_timeout(reset_retry_count=True)
             else:
                 self._reset_sport_stats2_timeout()
             return
@@ -565,18 +768,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-@callback
-def _async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def _async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options updates."""
-    hass.async_create_task(_async_apply_options(hass, entry))
+    await _async_apply_options(hass, entry)
 
 
 async def _async_apply_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Refresh weather after the user changes integration options."""
+    """Apply changed integration options to the watch."""
     if DOMAIN not in hass.data or entry.entry_id not in hass.data[DOMAIN]:
         return
 
     coordinator: HaylouUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    current_pairing_pin = coordinator._pairing_pin()
+    if current_pairing_pin != coordinator._last_pairing_pin:
+        _LOGGER.info("Pairing PIN changed, reconnecting watch")
+        coordinator._last_pairing_pin = current_pairing_pin
+        await coordinator.async_reconnect_now()
+        return
+
+    await coordinator.async_set_watch_units()
+    await coordinator.async_set_user_info()
     await coordinator._get_weather_payload()
     if coordinator.data.get("connection_state") == "connected":
         await coordinator._send_weather_to_watch()

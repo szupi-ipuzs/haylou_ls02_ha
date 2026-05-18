@@ -12,9 +12,47 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.selector import selector
 
-from .const import CONF_DEVICE_ADDRESS, CONF_WEATHER_SOURCE, DEVICE_NAME_FILTER, DOMAIN
+from .const import (
+    CONF_DEVICE_ADDRESS,
+    CONF_DISTANCE_UNIT,
+    CONF_LIFT_WRIST_MODE,
+    CONF_PAIRING_PIN,
+    CONF_SCREEN_SHOW_TIMEOUT_SECONDS,
+    CONF_STEP_GOAL,
+    CONF_TIME_FORMAT,
+    CONF_USER_AGE,
+    CONF_USER_GENDER,
+    CONF_USER_HEIGHT_CM,
+    CONF_USER_WEIGHT_KG,
+    CONF_WEATHER_SOURCE,
+    DEFAULT_DISTANCE_UNIT,
+    DEFAULT_LIFT_WRIST_MODE,
+    DEFAULT_PAIRING_PIN,
+    DEFAULT_SCREEN_SHOW_TIMEOUT_SECONDS,
+    DEFAULT_STEP_GOAL,
+    DEFAULT_TIME_FORMAT,
+    DEFAULT_USER_AGE,
+    DEFAULT_USER_GENDER,
+    DEFAULT_USER_HEIGHT_CM,
+    DEFAULT_USER_WEIGHT_KG,
+    DEVICE_NAME_FILTER,
+    DISTANCE_UNIT_IMPERIAL,
+    DISTANCE_UNIT_METRIC,
+    DOMAIN,
+    LIFT_WRIST_MODE_OFF,
+    LIFT_WRIST_MODE_ON,
+    TIME_FORMAT_12H,
+    TIME_FORMAT_24H,
+    USER_GENDER_FEMALE,
+    USER_GENDER_MALE,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _is_valid_pairing_pin(pin: str) -> bool:
+    """Return True if the pairing PIN is exactly four digits."""
+    return isinstance(pin, str) and len(pin) == 4 and pin.isdigit()
 
 
 class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -162,21 +200,52 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Let user assign a friendly name and weather source to the device."""
+        errors = {}
+
         if user_input is not None:
             device_name = user_input.get(CONF_NAME, "Haylou Watch")
             weather_source = user_input.get(CONF_WEATHER_SOURCE)
-
-            # Create config entry with weather source saved as options
-            return self.async_create_entry(
-                title=device_name,
-                data={
-                    CONF_DEVICE_ADDRESS: self.selected_device,
-                    CONF_NAME: device_name,
-                },
-                options={
-                    CONF_WEATHER_SOURCE: weather_source,
-                },
+            pairing_pin = user_input.get(CONF_PAIRING_PIN, DEFAULT_PAIRING_PIN)
+            time_format = user_input.get(CONF_TIME_FORMAT, DEFAULT_TIME_FORMAT)
+            distance_unit = user_input.get(CONF_DISTANCE_UNIT, DEFAULT_DISTANCE_UNIT)
+            user_height_cm = user_input.get(CONF_USER_HEIGHT_CM, DEFAULT_USER_HEIGHT_CM)
+            user_weight_kg = user_input.get(CONF_USER_WEIGHT_KG, DEFAULT_USER_WEIGHT_KG)
+            user_age = user_input.get(CONF_USER_AGE, DEFAULT_USER_AGE)
+            user_gender = user_input.get(CONF_USER_GENDER, DEFAULT_USER_GENDER)
+            screen_timeout = user_input.get(
+                CONF_SCREEN_SHOW_TIMEOUT_SECONDS,
+                DEFAULT_SCREEN_SHOW_TIMEOUT_SECONDS,
             )
+            step_goal = user_input.get(CONF_STEP_GOAL, DEFAULT_STEP_GOAL)
+            lift_wrist_mode = user_input.get(
+                CONF_LIFT_WRIST_MODE,
+                DEFAULT_LIFT_WRIST_MODE,
+            )
+
+            if not _is_valid_pairing_pin(pairing_pin):
+                errors[CONF_PAIRING_PIN] = "invalid_pairing_pin"
+            else:
+                # Create config entry with weather source saved as options
+                return self.async_create_entry(
+                    title=device_name,
+                    data={
+                        CONF_DEVICE_ADDRESS: self.selected_device,
+                        CONF_NAME: device_name,
+                    },
+                    options={
+                        CONF_WEATHER_SOURCE: weather_source,
+                        CONF_PAIRING_PIN: pairing_pin,
+                        CONF_TIME_FORMAT: time_format,
+                        CONF_DISTANCE_UNIT: distance_unit,
+                        CONF_USER_HEIGHT_CM: user_height_cm,
+                        CONF_USER_WEIGHT_KG: user_weight_kg,
+                        CONF_USER_AGE: user_age,
+                        CONF_USER_GENDER: user_gender,
+                        CONF_SCREEN_SHOW_TIMEOUT_SECONDS: screen_timeout,
+                        CONF_STEP_GOAL: step_goal,
+                        CONF_LIFT_WRIST_MODE: lift_wrist_mode,
+                    },
+                )
 
         return self.async_show_form(
             step_id="name",
@@ -187,8 +256,49 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_WEATHER_SOURCE,
                         default=None,
                     ): selector({"entity": {"domain": "weather"}}),
+                    vol.Optional(
+                        CONF_PAIRING_PIN,
+                        default=DEFAULT_PAIRING_PIN,
+                    ): str,
+                    vol.Optional(
+                        CONF_TIME_FORMAT,
+                        default=DEFAULT_TIME_FORMAT,
+                    ): vol.In([TIME_FORMAT_12H, TIME_FORMAT_24H]),
+                    vol.Optional(
+                        CONF_DISTANCE_UNIT,
+                        default=DEFAULT_DISTANCE_UNIT,
+                    ): vol.In([DISTANCE_UNIT_METRIC, DISTANCE_UNIT_IMPERIAL]),
+                    vol.Optional(
+                        CONF_USER_HEIGHT_CM,
+                        default=DEFAULT_USER_HEIGHT_CM,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=100, max=220)),
+                    vol.Optional(
+                        CONF_USER_WEIGHT_KG,
+                        default=DEFAULT_USER_WEIGHT_KG,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=40, max=200)),
+                    vol.Optional(
+                        CONF_USER_AGE,
+                        default=DEFAULT_USER_AGE,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=5, max=120)),
+                    vol.Optional(
+                        CONF_USER_GENDER,
+                        default=DEFAULT_USER_GENDER,
+                    ): vol.In([USER_GENDER_MALE, USER_GENDER_FEMALE]),
+                    vol.Optional(
+                        CONF_SCREEN_SHOW_TIMEOUT_SECONDS,
+                        default=DEFAULT_SCREEN_SHOW_TIMEOUT_SECONDS,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=3, max=30)),
+                    vol.Optional(
+                        CONF_STEP_GOAL,
+                        default=DEFAULT_STEP_GOAL,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=100, max=65000)),
+                    vol.Optional(
+                        CONF_LIFT_WRIST_MODE,
+                        default=DEFAULT_LIFT_WRIST_MODE,
+                    ): vol.In([LIFT_WRIST_MODE_ON, LIFT_WRIST_MODE_OFF]),
                 }
             ),
+            errors=errors,
             description_placeholders={"device_address": self.selected_device},
         )
 
@@ -224,12 +334,57 @@ class HaylouOptionsFlow(config_entries.OptionsFlow):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Manage the options."""
+        errors = {}
+
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            pairing_pin = user_input.get(CONF_PAIRING_PIN, DEFAULT_PAIRING_PIN)
+            if _is_valid_pairing_pin(pairing_pin):
+                return self.async_create_entry(title="", data=user_input)
+            errors[CONF_PAIRING_PIN] = "invalid_pairing_pin"
 
         weather_default = self.config_entry.options.get(
             CONF_WEATHER_SOURCE,
             self.config_entry.data.get(CONF_WEATHER_SOURCE),
+        )
+        pairing_pin_default = self.config_entry.options.get(
+            CONF_PAIRING_PIN,
+            DEFAULT_PAIRING_PIN,
+        )
+        time_format_default = self.config_entry.options.get(
+            CONF_TIME_FORMAT,
+            DEFAULT_TIME_FORMAT,
+        )
+        distance_unit_default = self.config_entry.options.get(
+            CONF_DISTANCE_UNIT,
+            DEFAULT_DISTANCE_UNIT,
+        )
+        user_height_default = self.config_entry.options.get(
+            CONF_USER_HEIGHT_CM,
+            DEFAULT_USER_HEIGHT_CM,
+        )
+        user_weight_default = self.config_entry.options.get(
+            CONF_USER_WEIGHT_KG,
+            DEFAULT_USER_WEIGHT_KG,
+        )
+        user_age_default = self.config_entry.options.get(
+            CONF_USER_AGE,
+            DEFAULT_USER_AGE,
+        )
+        user_gender_default = self.config_entry.options.get(
+            CONF_USER_GENDER,
+            DEFAULT_USER_GENDER,
+        )
+        screen_timeout_default = self.config_entry.options.get(
+            CONF_SCREEN_SHOW_TIMEOUT_SECONDS,
+            DEFAULT_SCREEN_SHOW_TIMEOUT_SECONDS,
+        )
+        step_goal_default = self.config_entry.options.get(
+            CONF_STEP_GOAL,
+            DEFAULT_STEP_GOAL,
+        )
+        lift_wrist_mode_default = self.config_entry.options.get(
+            CONF_LIFT_WRIST_MODE,
+            DEFAULT_LIFT_WRIST_MODE,
         )
 
         return self.async_show_form(
@@ -240,6 +395,47 @@ class HaylouOptionsFlow(config_entries.OptionsFlow):
                         CONF_WEATHER_SOURCE,
                         default=weather_default,
                     ): selector({"entity": {"domain": "weather"}}),
+                    vol.Optional(
+                        CONF_PAIRING_PIN,
+                        default=pairing_pin_default,
+                    ): str,
+                    vol.Optional(
+                        CONF_TIME_FORMAT,
+                        default=time_format_default,
+                    ): vol.In([TIME_FORMAT_12H, TIME_FORMAT_24H]),
+                    vol.Optional(
+                        CONF_DISTANCE_UNIT,
+                        default=distance_unit_default,
+                    ): vol.In([DISTANCE_UNIT_METRIC, DISTANCE_UNIT_IMPERIAL]),
+                    vol.Optional(
+                        CONF_USER_HEIGHT_CM,
+                        default=user_height_default,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=100, max=220)),
+                    vol.Optional(
+                        CONF_USER_WEIGHT_KG,
+                        default=user_weight_default,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=40, max=200)),
+                    vol.Optional(
+                        CONF_USER_AGE,
+                        default=user_age_default,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=5, max=120)),
+                    vol.Optional(
+                        CONF_USER_GENDER,
+                        default=user_gender_default,
+                    ): vol.In([USER_GENDER_MALE, USER_GENDER_FEMALE]),
+                    vol.Optional(
+                        CONF_SCREEN_SHOW_TIMEOUT_SECONDS,
+                        default=screen_timeout_default,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=3, max=30)),
+                    vol.Optional(
+                        CONF_STEP_GOAL,
+                        default=step_goal_default,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=100, max=65000)),
+                    vol.Optional(
+                        CONF_LIFT_WRIST_MODE,
+                        default=lift_wrist_mode_default,
+                    ): vol.In([LIFT_WRIST_MODE_ON, LIFT_WRIST_MODE_OFF]),
                 }
             ),
+            errors=errors,
         )
