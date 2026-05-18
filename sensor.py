@@ -82,83 +82,94 @@ def _get_weather_unit(weather_state) -> str | None:
     )
 
 
-def _pick_forecast_days(forecast: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """Pick today and next-day entries from a forecast list."""
-    if not forecast:
+NEXT_FORECAST_DAYS = 3
+
+
+def _parse_forecast_day(
+    forecast_entry: dict[str, Any],
+    weather_unit: str | None,
+    fallback_condition: str | None = None,
+) -> dict[str, Any] | None:
+    """Parse a single daily forecast entry for the watch protocol."""
+    max_temperature = _convert_to_celsius(
+        _get_forecast_value(
+            forecast_entry,
+            ("temperature", "temp", "high", "high_temp", "native_temperature"),
+        ),
+        weather_unit,
+    )
+    min_temperature = _convert_to_celsius(
+        _get_forecast_value(
+            forecast_entry,
+            ("templow", "temperature_low", "low", "native_templow"),
+        ),
+        weather_unit,
+    )
+    if max_temperature is None or min_temperature is None:
         return None
-    if len(forecast) >= 2:
-        return forecast[0], forecast[1]
-    return forecast[0], forecast[0]
+
+    condition = _get_forecast_value(forecast_entry, ("condition",)) or fallback_condition
+    return {
+        "condition": condition,
+        "weather_type": _map_condition_to_watch_type(condition),
+        "min_temperature": min_temperature,
+        "max_temperature": max_temperature,
+    }
+
+
+def _build_next_forecast_days(
+    forecast: list[dict[str, Any]], weather_unit: str | None
+) -> list[dict[str, Any]] | None:
+    """Build the next three daily forecast entries for set_weather_next."""
+    future_forecast = forecast[1:]
+    if not future_forecast:
+        return None
+
+    next_days: list[dict[str, Any]] = []
+    for index in range(NEXT_FORECAST_DAYS):
+        forecast_entry = (
+            future_forecast[index]
+            if index < len(future_forecast)
+            else future_forecast[-1]
+        )
+        day = _parse_forecast_day(forecast_entry, weather_unit)
+        if day is None:
+            return None
+        next_days.append(day)
+
+    return next_days
 
 
 def _build_weather_data(entity_id: str, weather_state, forecast: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Build watch weather payload from entity state and forecast entries."""
-    forecast_days = _pick_forecast_days(forecast)
-    if forecast_days is None:
+    if not forecast:
         return None
 
-    today_forecast, next_forecast = forecast_days
     weather_unit = _get_weather_unit(weather_state)
+    today = _parse_forecast_day(forecast[0], weather_unit, weather_state.state)
+    if today is None:
+        _LOGGER.debug("Weather entity %s has incomplete forecast data for today", entity_id)
+        return None
+
+    next_days = _build_next_forecast_days(forecast, weather_unit)
+    if next_days is None:
+        _LOGGER.debug("Weather entity %s has incomplete forecast data for next days", entity_id)
+        return None
+
     current_temperature = _convert_to_celsius(
         weather_state.attributes.get(ATTR_TEMPERATURE), weather_unit
     )
-
-    today_max = _convert_to_celsius(
-        _get_forecast_value(
-            today_forecast,
-            ("temperature", "temp", "high", "high_temp", "native_temperature"),
-        ),
-        weather_unit,
-    )
-    today_min = _convert_to_celsius(
-        _get_forecast_value(
-            today_forecast,
-            ("templow", "temperature_low", "low", "native_templow"),
-        ),
-        weather_unit,
-    )
-    today_condition = _get_forecast_value(today_forecast, ("condition",)) or weather_state.state
-    today_type = _map_condition_to_watch_type(today_condition)
-
-    next_max = _convert_to_celsius(
-        _get_forecast_value(
-            next_forecast,
-            ("temperature", "temp", "high", "high_temp", "native_temperature"),
-        ),
-        weather_unit,
-    )
-    next_min = _convert_to_celsius(
-        _get_forecast_value(
-            next_forecast,
-            ("templow", "temperature_low", "low", "native_templow"),
-        ),
-        weather_unit,
-    )
-    next_condition = _get_forecast_value(next_forecast, ("condition",))
-    next_type = _map_condition_to_watch_type(next_condition)
-
-    if today_min is None or today_max is None or next_min is None or next_max is None:
-        _LOGGER.debug("Weather entity %s has incomplete forecast data", entity_id)
-        return None
-
     if current_temperature is None:
-        current_temperature = today_max
+        current_temperature = today["max_temperature"]
 
     return {
         "entity_id": entity_id,
         "today": {
-            "condition": today_condition,
-            "weather_type": today_type,
+            **today,
             "current_temperature": current_temperature,
-            "min_temperature": today_min,
-            "max_temperature": today_max,
         },
-        "next": {
-            "condition": next_condition,
-            "weather_type": next_type,
-            "min_temperature": next_min,
-            "max_temperature": next_max,
-        },
+        "next": next_days[0],
+        "next_days": next_days,
     }
 
 

@@ -1,25 +1,36 @@
 """Device tracker for Haylou LS02 watch connection state."""
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
-from datetime import datetime, timezone, timedelta
 
 from homeassistant.components.device_tracker import TrackerEntity, SourceType
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER, MODEL, CONF_DEVICE_ADDRESS
+from .const import (
+    BLE_PRESENCE_TIMEOUT_MINUTES,
+    CONF_DEVICE_ADDRESS,
+    DOMAIN,
+    MANUFACTURER,
+    MODEL,
+    TRACKER_STATE_AWAY,
+    TRACKER_STATE_HOME,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+_PRESENCE_TIMEOUT = timedelta(minutes=BLE_PRESENCE_TIMEOUT_MINUTES)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities,
 ) -> None:
     """Set up device tracker for Haylou LS02."""
     coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
@@ -46,95 +57,49 @@ class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
     _attr_name = "Tracker"
 
     def __init__(self, coordinator, device_address: str, device_name: str, config_entry: ConfigEntry):
-        """Initialize the device tracker.
-
-        Args:
-            coordinator: Data update coordinator
-            device_address: MAC address of the Haylou watch (e.g., "AA:BB:CC:DD:EE:FF")
-            device_name: User-friendly name for the watch
-            config_entry: Configuration entry
-        """
+        """Initialize the device tracker."""
         super().__init__(coordinator)
-        self.device_address = device_address  # MAC address of the watch
+        self.device_address = device_address
         self.device_name = device_name
         self.config_entry = config_entry
         self._attr_unique_id = f"{DOMAIN}_{device_address}_tracker"
         _LOGGER.debug("Initialized HaylouDeviceTracker for %s", device_address)
 
     @property
-    def location_name(self) -> str | None:
-        """Return location name (home or away).
-
-        Used instead of coordinates for BLE-based tracking.
-        """
-        return "home" if self.is_connected else "away"
+    def location_name(self) -> str:
+        """Return Home when connected or recently seen, otherwise Away."""
+        return TRACKER_STATE_HOME if self._is_home else TRACKER_STATE_AWAY
 
     @property
-    def is_connected(self) -> bool:
-        """Return True if the device is home (detected or connected).
-
-        Device is considered home if:
-        - Connection state is 'connected' (via BLE connection to MAC address), OR
-        - MAC address was detected via BLE within the last 10 minutes
-
-        Returns False (away) if not detected for 10+ minutes.
-
-        Note: Detection uses MAC address only, BLE name is not used.
-        """
-        if not self.coordinator:
-            _LOGGER.debug("Coordinator is None for device %s", self.device_address)
+    def _is_home(self) -> bool:
+        """Return True when the watch is connected or recently detected by BLE."""
+        if not self.coordinator or not self.coordinator.data:
             return False
 
-        if not self.coordinator.data:
-            _LOGGER.debug("Coordinator data is None for device %s", self.device_address)
+        if self.coordinator.data.get("connection_state") == "connected":
+            return True
+
+        return self._was_recently_detected()
+
+    def _was_recently_detected(self) -> bool:
+        """Return True if the watch was seen in BLE during the presence window."""
+        last_detected = self.coordinator.data.get("last_ble_detected")
+        if last_detected is None:
             return False
 
-        try:
-            # If actively connected to this MAC address, device is home
-            connection_state = self.coordinator.data.get("connection_state", "disconnected")
-            _LOGGER.debug("Device %s connection_state: %s", self.device_address, connection_state)
-
-            if connection_state == "connected":
-                _LOGGER.debug("Device %s is connected", self.device_address)
-                return True
-
-            # Check if this MAC address was detected in BLE scan recently (within 10 minutes)
-            last_detected = self.coordinator.data.get("last_ble_detected")
-            if last_detected is None:
-                _LOGGER.debug("No last_ble_detected for device %s", self.device_address)
+        if isinstance(last_detected, str):
+            try:
+                last_detected = datetime.fromisoformat(last_detected)
+            except (ValueError, TypeError):
                 return False
 
-            # Parse timestamp if it's a string
-            if isinstance(last_detected, str):
-                try:
-                    last_detected = datetime.fromisoformat(last_detected)
-                except (ValueError, TypeError) as e:
-                    _LOGGER.debug("Failed to parse timestamp for %s: %s", self.device_address, e)
-                    return False
-
-            # Check if last detection was within 10 minutes
-            if isinstance(last_detected, datetime):
-                time_since_detection = datetime.now(timezone.utc) - last_detected
-                is_home = time_since_detection < timedelta(minutes=10)
-                _LOGGER.debug(
-                    "Device %s detected %s ago, is_home=%s",
-                    self.device_address,
-                    time_since_detection,
-                    is_home,
-                )
-                return is_home
-
-            _LOGGER.debug("Unexpected type for last_detected: %s", type(last_detected))
+        if not isinstance(last_detected, datetime):
             return False
 
-        except Exception as e:
-            _LOGGER.error(
-                "Error in is_connected property for %s: %s",
-                self.device_address,
-                e,
-                exc_info=True,
-            )
-            return False
+        if last_detected.tzinfo is None:
+            last_detected = last_detected.replace(tzinfo=timezone.utc)
+
+        return datetime.now(timezone.utc) - last_detected < _PRESENCE_TIMEOUT
 
     async def async_added_to_hass(self) -> None:
         """When entity is added to Home Assistant."""
@@ -156,5 +121,4 @@ class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        _LOGGER.debug("Coordinator update for device %s", self.device_address)
         self.async_write_ha_state()

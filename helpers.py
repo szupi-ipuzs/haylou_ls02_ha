@@ -1,5 +1,6 @@
 """Helper classes for the Haylou Watch"""
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 class HaylouTime:
@@ -13,6 +14,17 @@ class HaylouTime:
         self.hour = 0
         self.minute = 0
         self.second = 0
+
+    @staticmethod
+    def from_datetime(ts: datetime) -> HaylouTime:
+        result = HaylouTime()
+        result.year = ts.year & 0xFFFF
+        result.month = ts.month & 0xFF
+        result.day = ts.day & 0xFF
+        result.hour = ts.hour & 0xFF
+        result.minute = ts.minute & 0xFF
+        result.second = ts.second & 0xFF
+        return result
 
     @staticmethod
     def from_payload(payload: bytes) -> HaylouTime:
@@ -53,40 +65,54 @@ class HaylouTime:
             tzinfo=timezone.utc
         )
 
+    def is_same_day(self, other: HaylouTime) -> bool:
+        return self.year == other.year and self.month == other.month and self.day == other.day
+
+    def is_same_hour(self, other: HaylouTime) -> bool:
+        return self.is_same_day(other) and self.hour == other.hour
+
+
+@dataclass
+class HaylouStepsData:
+    steps: int
+    time: HaylouTime
+
+    def __init__(self, steps: int, time: HaylouTime):
+        self.steps = steps
+        self.time = time
+
 
 class HaylouSteps:
     """Helper struct to track steps count"""
 
     def __init__(self):
         """Set initial values"""
-        self._adding_stored = False
-        self._base_value = 0
-        self._last_value = 0
-        self._previous_value = 0
-        self._last_time = HaylouTime()
+        self._counters = []
+        self._finished_adding = True
 
     def set_value_incremental(self, time: HaylouTime, steps: int):
-        if self._last_time != time:
-            self._last_time = time
-            self._base_value += self._last_value
-        self._last_value = steps
+        if not self._counters:
+            self._counters.append(HaylouStepsData(steps, time))
+        else:
+            last_counter = self._counters[-1]
+            if last_counter.time == time:
+                last_counter.steps = steps
+            else:
+                self._counters.append(HaylouStepsData(steps, time))
 
     def add_value_stored(self, time: HaylouTime, steps: int):
-        if not self._adding_stored:
-            self._previous_value = self._base_value + self._last_value
-            self._last_time = time
-            self._base_value = 0
-        elif self._last_time != time:
-            self._last_time = time
-            self._base_value += steps
-
-        self._last_value = steps
-        self._adding_stored = True
+        if self._finished_adding:
+            self._counters.clear()
+            self._finished_adding = False
+        self._counters.append(HaylouStepsData(steps, time))
 
     def finish_adding_stored(self):
-        self._adding_stored = False
+        self._finished_adding = True
 
-    def get_value(self):
-        if self._adding_stored:
-            return self._previous_value
-        return self._base_value + self._last_value
+    def get_value(self, time: datetime) -> int:
+        haylou_time = HaylouTime.from_datetime(time)
+        total_steps_for_day = 0
+        for counter in self._counters:
+            if counter.time.is_same_day(haylou_time):
+                total_steps_for_day += counter.steps
+        return total_steps_for_day

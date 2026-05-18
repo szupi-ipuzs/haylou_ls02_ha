@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 import voluptuous as vol
 
+from homeassistant.components import bluetooth
+from homeassistant.components.bluetooth import BluetoothScanningMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
@@ -14,17 +16,42 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    BLE_PRESENCE_TIMEOUT_MINUTES,
     CONF_DEVICE_ADDRESS,
     CONF_WEATHER_SOURCE,
+    CMD_ID_SPORT_STATISTICS2,
     DOMAIN,
-    SERVICE_SEND_MESSAGE
+    SERVICE_SEND_MESSAGE,
+    SPORT_STATS2_END_MARKER,
+    SPORT_STATS2_RETRY_TIMEOUT_SECONDS,
 )
 from .ble_client import HaylouBLEClient, NotificationCallbacks
-from .sensor import async_extract_weather_data
+from .sensor import NEXT_FORECAST_DAYS, async_extract_weather_data
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["device_tracker", "sensor"]
+
+_DEFAULT_NEXT_DAY = {
+    "weather_type": 1,
+    "max_temperature": 0,
+    "min_temperature": 0,
+}
+
+
+def _default_weather_payload() -> dict[str, Any]:
+    """Return fallback weather data when no source entity is available."""
+    next_days = [_DEFAULT_NEXT_DAY.copy() for _ in range(NEXT_FORECAST_DAYS)]
+    return {
+        "today": {
+            "weather_type": 1,
+            "current_temperature": 0,
+            "max_temperature": 0,
+            "min_temperature": 0,
+        },
+        "next": next_days[0],
+        "next_days": next_days,
+    }
 
 SCAN_INTERVAL_SECONDS = 60
 
@@ -57,6 +84,11 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         }
         self._reconnect_task: Optional[asyncio.Task] = None
         self._weather_task: Optional[asyncio.Task] = None
+        self._presence_task: Optional[asyncio.Task] = None
+        self._sport_stats2_timeout_task: Optional[asyncio.Task] = None
+        self._sport_stats2_in_progress = False
+        self._sport_stats2_retry_pending = False
+        self._bluetooth_unsub = None
         self._cached_weather: dict[str, Any] | None = None
         self._running = True
 
@@ -73,40 +105,37 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             self.config_entry.data.get(CONF_WEATHER_SOURCE),
         )
         if not weather_entity_id:
-            return {
-                "today": {
-                    "weather_type": 1,
-                    "current_temperature": 0,
-                    "max_temperature": 0,
-                    "min_temperature": 0,
-                },
-                "next": {
-                    "weather_type": 1,
-                    "max_temperature": 0,
-                    "min_temperature": 0,
-                },
-            }
+            return _default_weather_payload()
 
         weather_data = await async_extract_weather_data(self.hass, weather_entity_id)
         if not weather_data:
-            return {
-                "today": {
-                    "weather_type": 1,
-                    "current_temperature": 0,
-                    "max_temperature": 0,
-                    "min_temperature": 0,
-                },
-                "next": {
-                    "weather_type": 1,
-                    "max_temperature": 0,
-                    "min_temperature": 0,
-                },
-            }
+            return _default_weather_payload()
 
         self._cached_weather = weather_data
         return weather_data
 
-    async def _send_weather_to_watch(self):
+    def _has_configured_weather_source(self) -> bool:
+        """Return whether a weather entity is configured for this entry."""
+        return bool(
+            self.config_entry.options.get(CONF_WEATHER_SOURCE)
+            or self.config_entry.data.get(CONF_WEATHER_SOURCE)
+        )
+
+    def _is_default_weather_payload(self, payload: dict[str, Any]) -> bool:
+        """Return True if the payload is the integration fallback weather."""
+        today = payload.get("today", {})
+        next_day = payload.get("next", {})
+        return (
+            today.get("weather_type") == 1
+            and today.get("current_temperature") == 0
+            and today.get("max_temperature") == 0
+            and today.get("min_temperature") == 0
+            and next_day.get("weather_type") == 1
+            and next_day.get("max_temperature") == 0
+            and next_day.get("min_temperature") == 0
+        )
+
+    async def _send_weather_to_watch(self) -> None:
         """Send the current and next-day weather to the watch."""
         weather_payload = self._cached_weather
         if weather_payload is None:
@@ -115,8 +144,21 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         if not weather_payload:
             return
 
+        if self._has_configured_weather_source() and self._is_default_weather_payload(
+            weather_payload
+        ):
+            _LOGGER.warning(
+                "Skipping weather sync: configured weather source returned no usable forecast"
+            )
+            return
+
         today = weather_payload["today"]
-        next_day = weather_payload["next"]
+        next_days = weather_payload.get("next_days")
+        if not next_days:
+            next_day = weather_payload["next"]
+            next_days = [next_day] * NEXT_FORECAST_DAYS
+
+        day1, day2, day3 = next_days[:NEXT_FORECAST_DAYS]
 
         await self.ble_client.set_weather_today(
             today["weather_type"],
@@ -126,15 +168,15 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         )
 
         await self.ble_client.set_weather_next(
-            next_day["weather_type"],
-            int(next_day["max_temperature"]),
-            int(next_day["min_temperature"]),
-            next_day["weather_type"],
-            int(next_day["max_temperature"]),
-            int(next_day["min_temperature"]),
-            next_day["weather_type"],
-            int(next_day["max_temperature"]),
-            int(next_day["min_temperature"]),
+            day1["weather_type"],
+            int(day1["max_temperature"]),
+            int(day1["min_temperature"]),
+            day2["weather_type"],
+            int(day2["max_temperature"]),
+            int(day2["min_temperature"]),
+            day3["weather_type"],
+            int(day3["max_temperature"]),
+            int(day3["min_temperature"]),
         )
 
     async def _weather_loop(self) -> None:
@@ -148,6 +190,17 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             except Exception as err:  # pylint: disable=broad-except
                 _LOGGER.debug("Weather refresh failed: %s", err)
             await asyncio.sleep(15 * 60)
+
+    async def _async_initialize_watch_and_weather(self) -> bool:
+        """Initialize the watch and push the configured weather forecast."""
+        if not await self.ble_client.initialize_watch():
+            return False
+
+        # Fetch a fresh forecast after each connect/reconnect.
+        self._cached_weather = None
+        await self._get_weather_payload()
+        await self._send_weather_to_watch()
+        return True
 
     async def async_config_entry_first_refresh(self) -> None:
         """First refresh when config entry is set up."""
@@ -165,18 +218,16 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             ):
                 raise UpdateFailed("Failed to subscribe to watch notifications")
 
-            # Initialize the watch once connected
-            if not await self.ble_client.initialize_watch():
+            # Initialize the watch and sync weather from the configured source
+            if not await self._async_initialize_watch_and_weather():
                 raise UpdateFailed("Failed to initialize Haylou watch")
-
-            # Send weather at initialization if configured
-            await self._get_weather_payload()
-            await self._send_weather_to_watch()
 
             self.data["connection_state"] = "connected"
             self.data["last_ble_detected"] = datetime.now(timezone.utc)
             self.last_update_success = True
             self.async_set_updated_data(self.data)
+
+            self._async_setup_ble_presence()
 
             # Start background reconnection task
             if self._reconnect_task is None:
@@ -185,6 +236,9 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             # Start periodic weather refresh task
             if self._weather_task is None:
                 self._weather_task = asyncio.create_task(self._weather_loop())
+
+            if self._presence_task is None:
+                self._presence_task = asyncio.create_task(self._presence_update_loop())
         except UpdateFailed as e:
             _LOGGER.error("Update failed: %s", e)
             self.data["connection_state"] = "disconnected"
@@ -199,16 +253,134 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             on_data2_n=self._on_notification_data2_n,
         )
 
+    @callback
+    def _mark_ble_detected(self) -> None:
+        """Record that the watch was seen via BLE (connection or scan)."""
+        self.data["last_ble_detected"] = datetime.now(timezone.utc)
+        self.async_set_updated_data(self.data)
+
+    def _async_setup_ble_presence(self) -> None:
+        """Listen for passive BLE advertisements from the watch."""
+        if self._bluetooth_unsub is not None:
+            return
+
+        address = self.ble_client.device_address
+
+        @callback
+        def _bluetooth_advertisement_callback(_service_info, _change) -> None:
+            self._mark_ble_detected()
+
+        self._bluetooth_unsub = bluetooth.async_register_callback(
+            self.hass,
+            _bluetooth_advertisement_callback,
+            {"address": address},
+            BluetoothScanningMode.PASSIVE,
+        )
+
+    @callback
+    def _poll_ble_presence(self) -> None:
+        """Update last seen time if the watch is visible to the BLE stack."""
+        address = self.ble_client.device_address
+        if bluetooth.async_address_present(self.hass, address):
+            self._mark_ble_detected()
+
+    async def _presence_update_loop(self) -> None:
+        """Refresh coordinator so device tracker re-evaluates the 10-minute timeout."""
+        while self._running:
+            try:
+                if self.data.get("connection_state") != "connected":
+                    self._poll_ble_presence()
+                    self.async_set_updated_data(self.data)
+            except Exception as err:  # pylint: disable=broad-except
+                _LOGGER.debug("Presence refresh failed: %s", err)
+            await asyncio.sleep(30)
+
     def _note_ble_activity(self, characteristic: str, payload: bytes) -> None:
         """Record BLE activity and log incoming notification."""
         _LOGGER.debug(
             "Received notification from %s: %s", characteristic, payload.hex()
         )
-        self.data["last_ble_detected"] = datetime.now(timezone.utc)
+        self._mark_ble_detected()
+
+    def _is_sport_stats2_payload(self, payload: bytes) -> bool:
+        """Return True if this notification is a sport statistics 2 frame."""
+        return len(payload) >= 1 and payload[0] == CMD_ID_SPORT_STATISTICS2
+
+    def _is_sport_stats2_end_payload(self, payload: bytes) -> bool:
+        """Return True if this sport statistics 2 frame ends the current burst."""
+        return len(payload) >= 2 and payload[1] == SPORT_STATS2_END_MARKER
+
+    def _reset_sport_stats2_timeout(self) -> None:
+        """Start or restart the missing-terminator timeout."""
+        self._sport_stats2_in_progress = True
+        if (
+            self._sport_stats2_timeout_task
+            and not self._sport_stats2_timeout_task.done()
+        ):
+            self._sport_stats2_timeout_task.cancel()
+        self._sport_stats2_timeout_task = self.hass.async_create_task(
+            self._retry_sport_stats_after_timeout()
+        )
+
+    def _cancel_sport_stats2_timeout(self) -> None:
+        """Cancel pending sport statistics 2 retry state."""
+        self._sport_stats2_in_progress = False
+        if (
+            self._sport_stats2_timeout_task
+            and not self._sport_stats2_timeout_task.done()
+        ):
+            self._sport_stats2_timeout_task.cancel()
+        self._sport_stats2_timeout_task = None
+
+    async def _retry_sport_stats_after_timeout(self) -> None:
+        """Re-request sport statistics if a burst does not terminate in time."""
+        try:
+            await asyncio.sleep(SPORT_STATS2_RETRY_TIMEOUT_SECONDS)
+            if self._sport_stats2_in_progress:
+                self._sport_stats2_in_progress = False
+                self._sport_stats2_timeout_task = None
+                await self._request_sport_stats_retry("timeout")
+        except asyncio.CancelledError:
+            pass
+
+    async def _request_sport_stats_retry(self, reason: str) -> None:
+        """Request sport statistics again, guarding against duplicate retries."""
+        if self._sport_stats2_retry_pending:
+            return
+
+        self._sport_stats2_retry_pending = True
+        try:
+            _LOGGER.warning("Re-requesting sport statistics: %s", reason)
+            self.ble_client.reset_steps_counter()
+            if not await self.ble_client.request_sport_stats():
+                _LOGGER.warning("Failed to re-request sport statistics")
+        finally:
+            self._sport_stats2_retry_pending = False
+
+    def _track_sport_stats2_burst(self, payload: bytes) -> None:
+        """Track incomplete sport statistics 2 bursts on the N1 channel."""
+        if self._is_sport_stats2_payload(payload):
+            if self._is_sport_stats2_end_payload(payload):
+                self._cancel_sport_stats2_timeout()
+            else:
+                self._reset_sport_stats2_timeout()
+            return
+
+        if self._sport_stats2_in_progress:
+            self._cancel_sport_stats2_timeout()
+            reason = (
+                f"interrupted by command 0x{payload[0]:02X}"
+                if payload
+                else "interrupted by empty payload"
+            )
+            self.hass.async_create_task(
+                self._request_sport_stats_retry(reason)
+            )
 
     def _on_notification_general_n1(self, payload: bytes) -> None:
         """Handle incoming notification from CHAR_GENERAL_N_1."""
         self._note_ble_activity("general_n1", payload)
+        self._track_sport_stats2_burst(payload)
 
         battery = self.ble_client.parse_battery_status(payload)
         if battery is not None:
@@ -247,6 +419,12 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             self.data["current_heart_rate"] = current_hr
             self.async_set_updated_data(self.data)
             return
+        
+        current_hr = self.ble_client.parse_heartrate_data2_n(payload)
+        if current_hr is not None:
+            self.data["current_heart_rate"] = current_hr
+            self.async_set_updated_data(self.data)
+            return
 
     async def _ensure_connected(self) -> None:
         """Background task to monitor connection and auto-reconnect."""
@@ -261,6 +439,8 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
                     reconnect_delay = 5
                     await asyncio.sleep(10)  # Check connection every 10 seconds
                     continue
+
+                self._poll_ble_presence()
 
                 # Connection lost, attempt reconnection
                 if self.data["connection_state"] != "disconnected":
@@ -294,8 +474,8 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
                     reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
                     continue
 
-                # Re-initialize watch
-                if not await self.ble_client.initialize_watch():
+                # Re-initialize watch and sync weather
+                if not await self._async_initialize_watch_and_weather():
                     _LOGGER.warning("Failed to initialize watch after reconnection")
                     await self.ble_client.disconnect()
                     reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
@@ -319,6 +499,22 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
     async def async_shutdown(self) -> None:
         """Shutdown coordinator and disconnect."""
         self._running = False
+        if self._bluetooth_unsub:
+            self._bluetooth_unsub()
+            self._bluetooth_unsub = None
+        if self._presence_task:
+            self._presence_task.cancel()
+            try:
+                await self._presence_task
+            except asyncio.CancelledError:
+                pass
+        if self._sport_stats2_timeout_task:
+            self._sport_stats2_timeout_task.cancel()
+            try:
+                await self._sport_stats2_timeout_task
+            except asyncio.CancelledError:
+                pass
+            self._sport_stats2_timeout_task = None
         if self._weather_task:
             self._weather_task.cancel()
             try:

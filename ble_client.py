@@ -36,6 +36,7 @@ _LOGGER = logging.getLogger(__name__)
 MAX_COMMAND_LENGTH = 48
 MAX_MESSAGE_CHARS = 128  # UTF-16 encoded
 MAX_BATCH_CHARS = 10  # UTF-16 chars per batch
+BLE_OPERATION_TIMEOUT = 3
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,10 @@ class HaylouBLEClient:
         self._client = None
         self._notification_callbacks: Optional[NotificationCallbacks] = None
         self._subscribed = False
+        self._steps_counter = HaylouSteps()
+
+    def reset_steps_counter(self) -> None:
+        """Reset step aggregation state before requesting a fresh full sync."""
         self._steps_counter = HaylouSteps()
 
     def is_connected(self) -> bool:
@@ -100,11 +105,20 @@ class HaylouBLEClient:
         """Disconnect from the watch."""
         try:
             if self._subscribed:
-                await self.unsubscribe_notifications()
+                await asyncio.wait_for(
+                    self.unsubscribe_notifications(), timeout=BLE_OPERATION_TIMEOUT
+                )
             if self._client:
-                await self._client.disconnect()
+                await asyncio.wait_for(
+                    self._client.disconnect(), timeout=BLE_OPERATION_TIMEOUT
+                )
                 self._client = None
             _LOGGER.debug("Disconnected from %s", self.device_address)
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Timed out disconnecting from %s", self.device_address)
+            self._subscribed = False
+            self._notification_callbacks = None
+            self._client = None
         except Exception as e:
             _LOGGER.error("Error disconnecting: %s", e)
 
@@ -135,8 +149,18 @@ class HaylouBLEClient:
         """Unsubscribe from watch notifications."""
         try:
             if self._client and self._subscribed:
-                await self._client.stop_notify(CHAR_GENERAL_N_1_UUID)
-                await self._client.stop_notify(CHAR_DATA2_N_UUID)
+                for char_uuid in (CHAR_GENERAL_N_1_UUID, CHAR_DATA2_N_UUID):
+                    try:
+                        await asyncio.wait_for(
+                            self._client.stop_notify(char_uuid),
+                            timeout=BLE_OPERATION_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
+                        _LOGGER.warning(
+                            "Timed out unsubscribing from %s on %s",
+                            char_uuid,
+                            self.device_address,
+                        )
                 self._subscribed = False
             self._notification_callbacks = None
             _LOGGER.debug("Unsubscribed from notifications")
@@ -206,6 +230,11 @@ class HaylouBLEClient:
     async def request_hbm_stats(self) -> bool:
         """Request current HBM status from watch."""
         cmd = bytes([CMD_ID_HBM_STATUS_REQUEST, 0xFA])
+        return await self.send_command_2(cmd)
+
+    async def request_heartrate(self) -> bool:
+        """Request periodic current heartrate from watch."""
+        cmd = bytes([CMD_ID_HBM_STATUS_REQUEST, 0x01])
         return await self.send_command_2(cmd)
 
     async def send_message(
@@ -394,35 +423,27 @@ class HaylouBLEClient:
             pairing_key = await self.get_pairing_key()
             if pairing_key:
                 _LOGGER.debug("Pairing key: %s", pairing_key)
-#            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
 
             # Set time
             await self.set_time(datetime.now())
-#            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
 
             # Request battery status
             await self.request_battery()
-#            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
 
             # Set units
             await self.set_units(True, True)
-#            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
 
-            # Set weather for today
-            await self.set_weather_today(0x09, 8, 10, 5)  # UNKNOWN_S
-#            await asyncio.sleep(0.5)
-
-            # Set weather for next days
-            await self.set_weather_next(
-                0x06, 10, 5,  # SLIGHTLY_RAINY
-                0x01, 13, 9,  # SUNNY
-                0x08, 0, -2   # SNOWY
-            )
-
-#            await asyncio.sleep(0.5)
             await self.request_sport_stats()
+            await asyncio.sleep(0.5)
 
             await self.request_hbm_stats()
+            await asyncio.sleep(0.5)
+
+            await self.request_heartrate()
 
             _LOGGER.info("Watch initialization completed")
             return True
@@ -452,7 +473,7 @@ class HaylouBLEClient:
             stat_type = payload[1]
 
             if stat_type == 0x04 and len(payload) >= 11:
-                timestamp = HaylouTime.from_payload(payload[2:7]).timestamp()
+                timestamp = HaylouTime.from_payload(payload[2:8]).timestamp()
                 bpm_max = payload[8]
                 bpm_min = payload[9]
                 bpm_avg = payload[10]
@@ -483,11 +504,10 @@ class HaylouBLEClient:
     def parse_hbm_statistics_data2_n(self, payload: bytes) -> Optional[dict]:
         """Parse HBM statistics from CHAR_DATA2_N notification payload."""
         try:
-            if (
-                len(payload) >= 11
-                and payload[0] == CMD_ID_HBM_STATUS_REQUEST
-                and payload[1] == 0x04
-            ):
+            if payload[0] != CMD_ID_HBM_STATUS_REQUEST and len(payload) < 2:
+                return None
+            stat_type = payload[1]
+            if (stat_type == 0x04 and len(payload) >= 11):
                 timestamp = HaylouTime.from_payload(payload[2:7]).timestamp()
                 bpm_max = payload[8]
                 bpm_min = payload[9]
@@ -500,10 +520,31 @@ class HaylouBLEClient:
                     "bpm_max": bpm_max,
                     "type": "statistics1",
                 }
+            elif (stat_type == 0x03 and len(payload) >= 9):
+                timestamp = HaylouTime.from_payload(payload[2:8]).timestamp()
+                bpm = payload[8]
 
-            return None
+                return {
+                    "timestamp": timestamp.isoformat(),
+                    "bpm": bpm,
+                    "type": "statistics2",
+                }
+            else:
+                return None
+
         except Exception as e:
             _LOGGER.error("Error parsing HBM statistics (data2 N): %s", e)
+            return None
+
+    def parse_heartrate_data2_n(self, payload: bytes) -> Optional[int]:
+        """Parse heartrate from CHAR_DATA2_N notification payload."""
+        try:
+            if len(payload) < 4 or payload[0] != CMD_ID_HBM_STATUS2 or payload[1] != 0x11:
+                return None
+
+            return payload[3]
+        except Exception as e:
+            _LOGGER.error("Error parsing heartrate (data2 N): %s", e)
             return None
 
     def parse_sport_statistics(self, payload: bytes) -> Optional[dict]:
@@ -526,12 +567,12 @@ class HaylouBLEClient:
             if len(payload) < 18:
                 return None
 
-            time = HaylouTime.from_payload(payload[1:5])
+            time = HaylouTime.from_payload(payload[1:6])
             steps = (payload[6] << 8) | payload[7]
             self._steps_counter.set_value_incremental(time, steps)
 
             return {
-                "steps_count": self._steps_counter.get_value()
+                "steps_count": self._steps_counter.get_value(datetime.now())
             }
 
         except Exception as e:
@@ -542,17 +583,17 @@ class HaylouBLEClient:
         """Parse sport statistics (frame type 2) from notification payload."""
         try:
             if len(payload) == 18:
-                time = HaylouTime.from_payload(payload[1:5])
+                time = HaylouTime.from_payload(payload[1:6])
                 steps = (payload[6] << 8) | payload[7]
                 self._steps_counter.add_value_stored(time, steps)
 
                 return {
-                    "steps_count": self._steps_counter.get_value()
+                    "steps_count": self._steps_counter.get_value(datetime.now())
                 }
             elif (len(payload) == 3) and (payload[1] == 0xFD):
                 self._steps_counter.finish_adding_stored()
                 return {
-                    "steps_count": self._steps_counter.get_value()
+                    "steps_count": self._steps_counter.get_value(datetime.now())
                 }
             else:
                 return None
@@ -564,11 +605,9 @@ class HaylouBLEClient:
     def parse_hbm_status(self, payload: bytes) -> Optional[int]:
         """Parse current HBM status from notification payload."""
         try:
-            if (
-                len(payload) >= 4
-                and payload[0] == CMD_ID_HBM_STATUS
-                and payload[1] == 0x11
-            ):
+            if payload[0] == CMD_ID_HBM_STATUS:
+                if len(payload) < 4 or payload[1] != 0x11:
+                    return None
                 return payload[3]
             return None
         except Exception as e:
@@ -578,12 +617,14 @@ class HaylouBLEClient:
     def parse_hbm_status2(self, payload: bytes) -> Optional[int]:
         """Parse current HBM status from notification payload."""
         try:
-            if (
-                len(payload) >= 4
-                and payload[0] == CMD_ID_HBM_STATUS2
-                and payload[1] == 0x11
-            ):
+            if payload[0] == CMD_ID_HBM_STATUS2:
+                if len(payload) < 4 or payload[1] != 0x11:
+                    return None
                 return payload[3]
+            if payload[0] == CMD_ID_HBM_STATUS_REQUEST:
+                if len(payload) < 9 or payload[1] != 0x03:
+                    return None
+                return payload[8]
             return None
         except Exception as e:
             _LOGGER.error("Error parsing HBM status: %s", e)
