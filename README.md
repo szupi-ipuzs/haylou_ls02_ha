@@ -10,6 +10,10 @@ This is a Home Assistant custom integration for the **Haylou Smart Watch 2 (LS02
 - **Heart Rate Sensor**: Receives HBM (heart beat monitor) statistics from the watch
 - **Watch Notifications**: Send text messages and alerts to your watch
 - **Battery Monitoring**: Track watch battery level
+- **Weather Support**: Select any weather entity to be weather source for the watch. Live updates!
+- **Steps Count**: Show the steps counted by watch as HA entity
+- **User Settings**: Change user-info like age, sex and weight from Home Assistant
+- **Watch Settings**: Change settings like "Wrist Mode" directly from Home Assistant
 
 ## Installation
 
@@ -36,7 +40,7 @@ This is a Home Assistant custom integration for the **Haylou Smart Watch 2 (LS02
 3. Choose discovery method:
    - **Scan for Haylou Watch**: Automatically finds devices
    - **Enter device address manually**: Use if device is not found
-4. Give your watch a friendly name
+4. Give your watch a friendly name, select weather source and other settings.
 5. Confirm the setup
 
 ### Multiple Devices
@@ -46,11 +50,11 @@ You can add multiple watches. Each will appear as a separate device in Home Assi
 ## Available Entities
 
 ### Device Tracker
-- **`device_tracker.haylou_ls02_<address>`**: Shows "home" when connected, "away" when disconnected
+- **`device_tracker.haylou_ls02_<address>`**: Shows "Home" when the watch is detected in the BLE scan, "Away" when not.
 
 ### Sensor
 - **`sensor.haylou_ls02_heartrate_<address>`**: Displays the latest heart rate measurement in BPM
-  - Attributes include: `bpm_min`, `bpm_avg`, `bpm_max`, `timestamp`, `battery`
+  - Attributes include: `bpm_current`, `bpm_min`, `bpm_avg`, `bpm_max`, `timestamp`, `battery`
 
 ## Services
 
@@ -112,14 +116,11 @@ The watch uses proprietary BLE characteristics to exchange commands and notifica
 - Bring the watch closer to your Home Assistant device
 - Restart Home Assistant
 - Unpair and re-pair the watch in your system Bluetooth settings
-
-### Missing entities
-- Check that the device is connected (device tracker shows "home")
-- Try requesting battery status to trigger a device communication
+- Make sure to use the same pin that was used in previous connections. Re-pairing with a new pin requires resetting the device to factory defaults.
 
 ## Development
 
-This integration is built from the C++ Haylou protocol reference in the parent repository.
+This integration was partially vibe-coded using Cursor AI. The base for this implementation was my C++ implementation of a POC command-line tool, which in turn was based on [this excellent RE work of XorTroll](https://github.com/XorTroll/Haywatch).
 
 ## License
 
