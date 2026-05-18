@@ -61,6 +61,7 @@ class HaylouConnectionStateSensor(CoordinatorEntity, SensorEntity):
             "name": self.device_name,
             "manufacturer": MANUFACTURER,
             "model": MODEL,
+            "sw_version": self.coordinator.data.get("firmware"),
         }
 
     async def async_added_to_hass(self) -> None:

@@ -121,6 +121,7 @@ class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
             "name": self.device_name,
             "manufacturer": MANUFACTURER,
             "model": MODEL,
+            "sw_version": self.coordinator.data.get("firmware"),
         }
 
     @callback

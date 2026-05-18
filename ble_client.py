@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from .helpers import HaylouTime, HaylouSteps
 
 from .const import (
+    CMD_ID_FIRMWARE,
     CMD_ID_HBM_STATUS2,
     CMD_ID_USER_INFO,
     SERVICE_1_UUID,
@@ -237,6 +238,11 @@ class HaylouBLEClient:
         """Request periodic current heartrate from watch."""
         cmd = bytes([CMD_ID_HBM_STATUS_REQUEST, 0x01])
         return await self.send_command_2(cmd)
+
+    async def request_firmware(self) -> bool:
+        """Request firmware version from watch."""
+        cmd = bytes([CMD_ID_FIRMWARE])
+        return await self.send_command_1(cmd)
 
     async def send_message(
         self, message: str, msg_type: str = "generic"
@@ -471,6 +477,9 @@ class HaylouBLEClient:
             await self.request_battery()
             await asyncio.sleep(0.2)
 
+            await self.request_firmware()
+            await asyncio.sleep(0.2)
+
             # Set units
             await self.set_units(distance_is_metric, time_is_24h)
             await asyncio.sleep(0.2)
@@ -482,6 +491,7 @@ class HaylouBLEClient:
             await asyncio.sleep(0.5)
 
             await self.request_heartrate()
+            await asyncio.sleep(0.5)
 
             _LOGGER.info("Watch initialization completed")
             return True
@@ -676,4 +686,14 @@ class HaylouBLEClient:
             return None
         except Exception as e:
             _LOGGER.error("Error parsing battery status: %s", e)
+            return None
+
+    def parse_firmware_version(self, payload: bytes) -> Optional[str]:
+        """Parse firmware version from notification payload."""
+        try:
+            if len(payload) >= 2 and payload[0] == CMD_ID_FIRMWARE:
+                return payload[1:].decode("utf-8", errors="ignore").strip("\x00")
+            return None
+        except Exception as e:
+            _LOGGER.error("Error parsing firmware version: %s", e)
             return None

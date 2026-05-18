@@ -146,6 +146,7 @@ class HaylouUserInfoNumber(CoordinatorEntity, NumberEntity):
             "name": self.device_name,
             "manufacturer": MANUFACTURER,
             "model": MODEL,
+            "sw_version": self.coordinator.data.get("firmware"),
         }
 
     async def async_set_native_value(self, value: float) -> None:

@@ -12,7 +12,7 @@ from homeassistant.components.bluetooth import BluetoothScanningMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -597,6 +597,17 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         if battery is not None:
             self.data["battery"] = battery
             self.async_set_updated_data(self.data)
+            return
+
+        firmware = self.ble_client.parse_firmware_version(payload)
+        if firmware is not None:
+            self.data["firmware"] = firmware
+            device_registry = dr.async_get(self.hass)
+            device = device_registry.async_get_device(
+                identifiers={(DOMAIN, self.ble_client.device_address)}
+            )
+            if device is not None:
+                device_registry.async_update_device(device.id, sw_version=firmware)
             return
 
         current_hr = self.ble_client.parse_hbm_status(payload)

@@ -87,6 +87,7 @@ class HaylouSelectEntity(CoordinatorEntity, SelectEntity):
             "name": self.device_name,
             "manufacturer": MANUFACTURER,
             "model": MODEL,
+            "sw_version": self.coordinator.data.get("firmware"),
         }
 
     async def _async_select_option(self, option: str) -> None:
