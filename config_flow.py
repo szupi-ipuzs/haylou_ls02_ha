@@ -55,6 +55,13 @@ def _is_valid_pairing_pin(pin: str) -> bool:
     return isinstance(pin, str) and len(pin) == 4 and pin.isdigit()
 
 
+def _weather_source_schema(default: str | None = None):
+    """Return an optional weather source schema entry."""
+    if default:
+        return vol.Optional(CONF_WEATHER_SOURCE, default=default)
+    return vol.Optional(CONF_WEATHER_SOURCE)
+
+
 class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Haylou LS02."""
 
@@ -204,7 +211,7 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             device_name = user_input.get(CONF_NAME, "Haylou Watch")
-            weather_source = user_input.get(CONF_WEATHER_SOURCE)
+            weather_source = user_input.get(CONF_WEATHER_SOURCE) or None
             pairing_pin = user_input.get(CONF_PAIRING_PIN, DEFAULT_PAIRING_PIN)
             time_format = user_input.get(CONF_TIME_FORMAT, DEFAULT_TIME_FORMAT)
             distance_unit = user_input.get(CONF_DISTANCE_UNIT, DEFAULT_DISTANCE_UNIT)
@@ -252,10 +259,7 @@ class HaylouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_NAME, default="Haylou Watch"): str,
-                    vol.Optional(
-                        CONF_WEATHER_SOURCE,
-                        default=None,
-                    ): selector({"entity": {"domain": "weather"}}),
+                    _weather_source_schema(): selector({"entity": {"domain": "weather"}}),
                     vol.Optional(
                         CONF_PAIRING_PIN,
                         default=DEFAULT_PAIRING_PIN,
@@ -339,6 +343,9 @@ class HaylouOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             pairing_pin = user_input.get(CONF_PAIRING_PIN, DEFAULT_PAIRING_PIN)
             if _is_valid_pairing_pin(pairing_pin):
+                if not user_input.get(CONF_WEATHER_SOURCE):
+                    user_input = dict(user_input)
+                    user_input.pop(CONF_WEATHER_SOURCE, None)
                 return self.async_create_entry(title="", data=user_input)
             errors[CONF_PAIRING_PIN] = "invalid_pairing_pin"
 
@@ -391,10 +398,7 @@ class HaylouOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(
-                        CONF_WEATHER_SOURCE,
-                        default=weather_default,
-                    ): selector({"entity": {"domain": "weather"}}),
+                    _weather_source_schema(weather_default): selector({"entity": {"domain": "weather"}}),
                     vol.Optional(
                         CONF_PAIRING_PIN,
                         default=pairing_pin_default,

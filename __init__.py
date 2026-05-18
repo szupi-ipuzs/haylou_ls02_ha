@@ -228,14 +228,15 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             gender_male=self._user_gender_male(),
         )
 
-    async def _get_weather_payload(self) -> dict[str, Any]:
+    async def _get_weather_payload(self) -> dict[str, Any] | None:
         """Fetch the current weather and next-day forecast from HA."""
         weather_entity_id = self.config_entry.options.get(
             CONF_WEATHER_SOURCE,
             self.config_entry.data.get(CONF_WEATHER_SOURCE),
         )
         if not weather_entity_id:
-            return _default_weather_payload()
+            self._cached_weather = None
+            return None
 
         weather_data = await async_extract_weather_data(self.hass, weather_entity_id)
         if not weather_data:
@@ -267,6 +268,9 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
 
     async def _send_weather_to_watch(self) -> None:
         """Send the current and next-day weather to the watch."""
+        if not self._has_configured_weather_source():
+            return
+
         weather_payload = self._cached_weather
         if weather_payload is None:
             weather_payload = await self._get_weather_payload()
@@ -313,7 +317,10 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         """Periodic weather refresh task while connected."""
         while self._running:
             try:
-                if self.data["connection_state"] == "connected":
+                if (
+                    self.data["connection_state"] == "connected"
+                    and self._has_configured_weather_source()
+                ):
                     await self._get_weather_payload()
                     await self._send_weather_to_watch()
             except Exception as err:  # pylint: disable=broad-except
@@ -331,10 +338,11 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
 
         await self.async_set_user_info()
 
-        # Fetch a fresh forecast after each connect/reconnect.
-        self._cached_weather = None
-        await self._get_weather_payload()
-        await self._send_weather_to_watch()
+        if self._has_configured_weather_source():
+            # Fetch a fresh forecast after each connect/reconnect.
+            self._cached_weather = None
+            await self._get_weather_payload()
+            await self._send_weather_to_watch()
         return True
 
     async def async_reconnect_now(self) -> None:
@@ -788,9 +796,12 @@ async def _async_apply_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
     await coordinator.async_set_watch_units()
     await coordinator.async_set_user_info()
-    await coordinator._get_weather_payload()
-    if coordinator.data.get("connection_state") == "connected":
-        await coordinator._send_weather_to_watch()
+    if coordinator._has_configured_weather_source():
+        await coordinator._get_weather_payload()
+        if coordinator.data.get("connection_state") == "connected":
+            await coordinator._send_weather_to_watch()
+    else:
+        coordinator._cached_weather = None
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

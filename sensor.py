@@ -558,6 +558,8 @@ class HaylouWeatherSourceSensor(HaylouSensorEntity):
             CONF_WEATHER_SOURCE,
             self.config_entry.data.get(CONF_WEATHER_SOURCE),
         )
+        if not entity_id:
+            return {"today": {}, "next": {}, "entity_id": None}
         if self._weather_cache is not None:
             return self._weather_cache
         cached = getattr(self.coordinator, "_cached_weather", None)
@@ -575,6 +577,8 @@ class HaylouWeatherSourceSensor(HaylouSensorEntity):
             self.config_entry.data.get(CONF_WEATHER_SOURCE),
         )
         if not entity_id:
+            self._weather_cache = None
+            self.async_write_ha_state()
             return
         weather_data = await async_extract_weather_data(self.hass, entity_id)
         if weather_data is not None:

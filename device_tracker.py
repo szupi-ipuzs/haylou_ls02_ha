@@ -71,6 +71,11 @@ class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
         return TRACKER_STATE_HOME if self._is_home else TRACKER_STATE_AWAY
 
     @property
+    def available(self) -> bool:
+        """Keep tracker available so it can report Away when not detected."""
+        return True
+
+    @property
     def _is_home(self) -> bool:
         """Return True when the watch is connected or recently detected by BLE."""
         if not self.coordinator or not self.coordinator.data:
