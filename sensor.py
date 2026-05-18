@@ -373,18 +373,19 @@ class HaylouHeartRateMaxSensor(HaylouSensorEntity):
         super().__init__(coordinator, device_address, device_name, config_entry)
         self._attr_unique_id = f"{DOMAIN}_{device_address}_heartrate_max"
         self._attr_name = "Heart Rate Max"
+        self._last_value: int | None = None
 
     @property
     def native_value(self) -> int | None:
         """Return the maximum heart rate value."""
         hbm_stats = self.coordinator.data.get("hbm_stats")
         if hbm_stats is None:
-            return None
+            return self._last_value
 
         if "bpm_max" in hbm_stats:
-            return hbm_stats["bpm_max"]
+            self._last_value = hbm_stats["bpm_max"]
 
-        return None
+        return self._last_value
 
 
 class HaylouHeartRateMinSensor(HaylouSensorEntity):
@@ -399,18 +400,19 @@ class HaylouHeartRateMinSensor(HaylouSensorEntity):
         super().__init__(coordinator, device_address, device_name, config_entry)
         self._attr_unique_id = f"{DOMAIN}_{device_address}_heartrate_min"
         self._attr_name = "Heart Rate Min"
+        self._last_value: int | None = None
 
     @property
     def native_value(self) -> int | None:
         """Return the minimum heart rate value."""
         hbm_stats = self.coordinator.data.get("hbm_stats")
         if hbm_stats is None:
-            return None
+            return self._last_value
 
         if "bpm_min" in hbm_stats:
-            return hbm_stats["bpm_min"]
+            self._last_value = hbm_stats["bpm_min"]
 
-        return None
+        return self._last_value
 
 
 class HaylouHeartRateAverageSensor(HaylouSensorEntity):
@@ -425,18 +427,19 @@ class HaylouHeartRateAverageSensor(HaylouSensorEntity):
         super().__init__(coordinator, device_address, device_name, config_entry)
         self._attr_unique_id = f"{DOMAIN}_{device_address}_heartrate_average"
         self._attr_name = "Heart Rate Average"
+        self._last_value: int | None = None
 
     @property
     def native_value(self) -> int | None:
         """Return the average heart rate value."""
         hbm_stats = self.coordinator.data.get("hbm_stats")
         if hbm_stats is None:
-            return None
+            return self._last_value
 
         if "bpm_avg" in hbm_stats:
-            return hbm_stats["bpm_avg"]
+            self._last_value = hbm_stats["bpm_avg"]
 
-        return None
+        return self._last_value
 
 
 class HaylouStepsSensor(HaylouSensorEntity):
