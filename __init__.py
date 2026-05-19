@@ -647,13 +647,13 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
 
         current_hr = self.ble_client.parse_hbm_status2(payload)
         if current_hr is not None:
-            self.data["current_heart_rate"] = current_hr
+            self.data["current_heart_rate"] = current_hr["bpm"]
             self.async_set_updated_data(self.data)
             return
         
         current_hr = self.ble_client.parse_heartrate_data2_n(payload)
         if current_hr is not None:
-            self.data["current_heart_rate"] = current_hr
+            self.data["current_heart_rate"] = current_hr["bpm"]
             self.async_set_updated_data(self.data)
             return
 

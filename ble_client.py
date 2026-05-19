@@ -544,7 +544,6 @@ class HaylouBLEClient:
                     "bpm_min": bpm_min,
                     "bpm_avg": bpm_avg,
                     "bpm_max": bpm_max,
-                    "type": "statistics1",
                 }
 
             if stat_type == 0x03:
@@ -554,7 +553,6 @@ class HaylouBLEClient:
                 return {
                     "timestamp": timestamp.isoformat(),
                     "bpm": bpm,
-                    "type": "statistics2",
                 }
 
             return None
@@ -579,7 +577,6 @@ class HaylouBLEClient:
                     "bpm_min": bpm_min,
                     "bpm_avg": bpm_avg,
                     "bpm_max": bpm_max,
-                    "type": "statistics1",
                 }
             elif (stat_type == 0x03 and len(payload) >= 9):
                 timestamp = HaylouTime.from_payload(payload[2:8]).timestamp()
@@ -588,7 +585,6 @@ class HaylouBLEClient:
                 return {
                     "timestamp": timestamp.isoformat(),
                     "bpm": bpm,
-                    "type": "statistics2",
                 }
             else:
                 return None
@@ -597,13 +593,16 @@ class HaylouBLEClient:
             _LOGGER.error("Error parsing HBM statistics (data2 N): %s", e)
             return None
 
-    def parse_heartrate_data2_n(self, payload: bytes) -> Optional[int]:
+    def parse_heartrate_data2_n(self, payload: bytes) -> Optional[dict]:
         """Parse heartrate from CHAR_DATA2_N notification payload."""
         try:
             if len(payload) < 4 or payload[0] != CMD_ID_HBM_STATUS2 or payload[1] != 0x11:
                 return None
 
-            return payload[3]
+            bpm = payload[3]
+            return {
+                "bpm": bpm,
+            }
         except Exception as e:
             _LOGGER.error("Error parsing heartrate (data2 N): %s", e)
             return None
@@ -675,17 +674,21 @@ class HaylouBLEClient:
             _LOGGER.error("Error parsing HBM status: %s", e)
             return None
 
-    def parse_hbm_status2(self, payload: bytes) -> Optional[int]:
+    def parse_hbm_status2(self, payload: bytes) -> Optional[dict]:
         """Parse current HBM status from notification payload."""
         try:
             if payload[0] == CMD_ID_HBM_STATUS2:
                 if len(payload) < 4 or payload[1] != 0x11:
                     return None
-                return payload[3]
+                return {
+                    "bpm": payload[3],
+                }
             if payload[0] == CMD_ID_HBM_STATUS_REQUEST:
                 if len(payload) < 9 or payload[1] != 0x03:
                     return None
-                return payload[8]
+                return {
+                    "bpm": payload[8],
+                }
             return None
         except Exception as e:
             _LOGGER.error("Error parsing HBM status: %s", e)
