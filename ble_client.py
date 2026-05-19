@@ -66,6 +66,10 @@ class HaylouBLEClient:
         self._subscribed = False
         self._steps_counter = HaylouSteps()
 
+    def reset_steps_counter(self) -> None:
+        """Reset step aggregation state before requesting a fresh full sync."""
+        self._steps_counter.start_adding_stored()
+
     def is_connected(self) -> bool:
         """Check if currently connected to the watch."""
         return self._client is not None and self._client.is_connected

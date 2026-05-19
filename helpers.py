@@ -87,6 +87,10 @@ class HaylouSteps:
     def set_value_incremental(self, time: HaylouTime, steps: int):
         self._counters[time] = steps
 
+    def start_adding_stored(self):
+        self._counters.clear()
+        self._finished_adding = False
+
     def add_value_stored(self, time: HaylouTime, steps: int):
         if self._finished_adding:
             self._counters.clear()

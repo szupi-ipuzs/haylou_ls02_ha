@@ -562,6 +562,7 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         try:
             self._sport_stats2_consecutive_retries += 1
             _LOGGER.warning("Re-requesting sport statistics: %s", reason)
+            self.ble_client.reset_steps_counter()
             if not await self.ble_client.request_sport_stats():
                 _LOGGER.warning("Failed to re-request sport statistics")
         finally:
