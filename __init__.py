@@ -18,6 +18,10 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     BLE_PRESENCE_TIMEOUT_MINUTES,
     BLE_PRESENCE_UPDATE_THROTTLE_SECONDS,
+    RECONNECT_CONNECTED_POLL_SECONDS,
+    RECONNECT_DISCONNECT_PAUSE_SECONDS,
+    RECONNECT_INITIAL_DELAY_SECONDS,
+    RECONNECT_MAX_DELAY_SECONDS,
     CONF_DISTANCE_UNIT,
     CONF_DEVICE_ADDRESS,
     CONF_LIFT_WRIST_MODE,
@@ -659,16 +663,14 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
 
     async def _ensure_connected(self) -> None:
         """Background task to monitor connection and auto-reconnect."""
-        reconnect_delay = 5  # Start with 5 seconds
-        max_reconnect_delay = 300  # Max 5 minutes
+        reconnect_delay = RECONNECT_INITIAL_DELAY_SECONDS
 
         while self._running:
             try:
                 # Check if still connected
                 if self.ble_client.is_connected():
-                    # Reset delay on successful connection
-                    reconnect_delay = 5
-                    await asyncio.sleep(10)  # Check connection every 10 seconds
+                    reconnect_delay = RECONNECT_INITIAL_DELAY_SECONDS
+                    await asyncio.sleep(RECONNECT_CONNECTED_POLL_SECONDS)
                     continue
 
                 self._poll_ble_presence()
@@ -688,28 +690,47 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
 
                 # Disconnect any existing connection
                 await self.ble_client.disconnect()
-                await asyncio.sleep(1)
+                await asyncio.sleep(RECONNECT_DISCONNECT_PAUSE_SECONDS)
 
                 # Reconnect
                 if not await self.ble_client.connect():
-                    _LOGGER.warning("Failed to reconnect, retrying in %d seconds", reconnect_delay)
-                    reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+                    reconnect_delay = min(
+                        reconnect_delay + 1,
+                        RECONNECT_MAX_DELAY_SECONDS,
+                    )
+                    _LOGGER.warning(
+                        "Failed to reconnect, retrying in %d seconds",
+                        reconnect_delay,
+                    )
                     continue
 
                 # Subscribe to notifications
                 if not await self.ble_client.subscribe_notifications(
                     self._notification_callbacks()
                 ):
-                    _LOGGER.warning("Failed to subscribe to notifications")
+                    reconnect_delay = min(
+                        reconnect_delay + 1,
+                        RECONNECT_MAX_DELAY_SECONDS,
+                    )
+                    _LOGGER.warning(
+                        "Failed to subscribe to notifications, retrying in %d seconds",
+                        reconnect_delay,
+                    )
                     await self.ble_client.disconnect()
-                    reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
                     continue
 
                 # Re-initialize watch and sync weather
                 if not await self._async_initialize_watch_and_weather():
-                    _LOGGER.warning("Failed to initialize watch after reconnection")
+                    reconnect_delay = min(
+                        reconnect_delay + 1,
+                        RECONNECT_MAX_DELAY_SECONDS,
+                    )
+                    _LOGGER.warning(
+                        "Failed to initialize watch after reconnection, "
+                        "retrying in %d seconds",
+                        reconnect_delay,
+                    )
                     await self.ble_client.disconnect()
-                    reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
                     continue
 
                 # Successful reconnection
@@ -718,14 +739,17 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
                 self.data["last_ble_detected"] = datetime.now(timezone.utc)
                 self.last_update_success = True
                 self.async_set_updated_data(self.data)
-                reconnect_delay = 5  # Reset delay
+                reconnect_delay = RECONNECT_INITIAL_DELAY_SECONDS
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 _LOGGER.error("Error in reconnect loop: %s", e)
                 await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+                reconnect_delay = min(
+                    reconnect_delay + 1,
+                    RECONNECT_MAX_DELAY_SECONDS,
+                )
 
     async def async_shutdown(self) -> None:
         """Shutdown coordinator and disconnect."""
