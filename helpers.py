@@ -55,6 +55,9 @@ class HaylouTime:
                 self.minute == other.minute and
                 self.second == other.second)
 
+    def __hash__(self):
+        return hash((self.year, self.month, self.day, self.hour, self.minute, self.second))
+
     def timestamp(self) -> datetime | None:
         if self.year < 1 or self.month < 1 or self.day < 1:
             return None
@@ -72,40 +75,23 @@ class HaylouTime:
         return self.is_same_day(other) and self.hour == other.hour
 
 
-@dataclass
-class HaylouStepsData:
-    steps: int
-    time: HaylouTime
-
-    def __init__(self, steps: int, time: HaylouTime):
-        self.steps = steps
-        self.time = time
-
-
 class HaylouSteps:
     """Helper struct to track steps count"""
 
     def __init__(self):
         """Set initial values"""
-        self._counters = []
+        self._counters = dict[HaylouTime, int]()
         self._finished_adding = True
         self._last_returned_value = 0
 
     def set_value_incremental(self, time: HaylouTime, steps: int):
-        if not self._counters:
-            self._counters.append(HaylouStepsData(steps, time))
-        else:
-            last_counter = self._counters[-1]
-            if last_counter.time == time:
-                last_counter.steps = steps
-            else:
-                self._counters.append(HaylouStepsData(steps, time))
+        self._counters[time] = steps
 
     def add_value_stored(self, time: HaylouTime, steps: int):
         if self._finished_adding:
             self._counters.clear()
             self._finished_adding = False
-        self._counters.append(HaylouStepsData(steps, time))
+        self._counters[time] = steps
 
     def finish_adding_stored(self):
         self._finished_adding = True
@@ -114,9 +100,6 @@ class HaylouSteps:
         if not self._finished_adding:
             return self._last_returned_value
         haylou_time = HaylouTime.from_datetime(time)
-        total_steps_for_day = 0
-        for counter in self._counters:
-            if counter.time.is_same_day(haylou_time):
-                total_steps_for_day += counter.steps
+        total_steps_for_day = sum(val for key, val in self._counters.items() if key.is_same_day(haylou_time))
         self._last_returned_value = total_steps_for_day
         return total_steps_for_day
