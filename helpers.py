@@ -74,6 +74,9 @@ class HaylouTime:
     def is_same_hour(self, other: HaylouTime) -> bool:
         return self.is_same_day(other) and self.hour == other.hour
 
+    def to_payload(self) -> bytes:
+        return bytes([self.year >> 8, self.year & 0xFF, self.month, self.day, self.hour, self.minute, self.second])
+
 
 class HaylouSteps:
     """Helper struct to track steps count"""

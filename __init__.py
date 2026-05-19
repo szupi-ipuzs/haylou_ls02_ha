@@ -11,7 +11,7 @@ from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import BluetoothScanningMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
-from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -387,49 +387,58 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         self.async_set_updated_data(self.data)
         self._reconnect_task = asyncio.create_task(self._ensure_connected())
 
+    def _async_start_background_tasks(self) -> None:
+        """Start background tasks for reconnection, weather, and presence."""
+        self._async_setup_ble_presence()
+
+        if self._reconnect_task is None:
+            self._reconnect_task = asyncio.create_task(self._ensure_connected())
+
+        if self._weather_task is None:
+            self._weather_task = asyncio.create_task(self._weather_loop())
+
+        if self._presence_task is None:
+            self._presence_task = asyncio.create_task(self._presence_update_loop())
+
     async def async_config_entry_first_refresh(self) -> None:
-        """First refresh when config entry is set up."""
-        try:
-            self.data["connection_state"] = "connecting"
-            self.async_set_updated_data(self.data)
+        """Attempt initial BLE connection without blocking config entry setup."""
+        self.data["connection_state"] = "connecting"
+        self.async_set_updated_data(self.data)
 
-            # Connect to device
-            if not await self.ble_client.connect():
-                raise UpdateFailed("Failed to connect to Haylou watch")
-
-            # Subscribe to notifications
-            if not await self.ble_client.subscribe_notifications(
+        connected = False
+        if await self.ble_client.connect():
+            if await self.ble_client.subscribe_notifications(
                 self._notification_callbacks()
             ):
-                raise UpdateFailed("Failed to subscribe to watch notifications")
+                if await self._async_initialize_watch_and_weather():
+                    connected = True
+                else:
+                    _LOGGER.warning(
+                        "Failed to initialize Haylou watch at startup; "
+                        "will retry in background"
+                    )
+            else:
+                _LOGGER.warning(
+                    "Failed to subscribe to watch notifications at startup; "
+                    "will retry in background"
+                )
+        else:
+            _LOGGER.warning(
+                "Failed to connect to Haylou watch at startup; "
+                "will retry in background"
+            )
 
-            # Initialize the watch and sync weather from the configured source
-            if not await self._async_initialize_watch_and_weather():
-                raise UpdateFailed("Failed to initialize Haylou watch")
-
+        if connected:
             self.data["connection_state"] = "connected"
             self.data["last_ble_detected"] = datetime.now(timezone.utc)
             self.last_update_success = True
-            self.async_set_updated_data(self.data)
-
-            self._async_setup_ble_presence()
-
-            # Start background reconnection task
-            if self._reconnect_task is None:
-                self._reconnect_task = asyncio.create_task(self._ensure_connected())
-
-            # Start periodic weather refresh task
-            if self._weather_task is None:
-                self._weather_task = asyncio.create_task(self._weather_loop())
-
-            if self._presence_task is None:
-                self._presence_task = asyncio.create_task(self._presence_update_loop())
-        except UpdateFailed as e:
-            _LOGGER.error("Update failed: %s", e)
+        else:
+            await self.ble_client.disconnect()
             self.data["connection_state"] = "disconnected"
-            self.async_set_updated_data(self.data)
             self.last_update_success = False
-            raise
+
+        self.async_set_updated_data(self.data)
+        self._async_start_background_tasks()
 
     def _notification_callbacks(self) -> NotificationCallbacks:
         """Build per-characteristic notification handlers."""
@@ -761,11 +770,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ble_client = HaylouBLEClient(hass, entry.data[CONF_DEVICE_ADDRESS])
     coordinator = HaylouUpdateCoordinator(hass, ble_client, entry)
 
-    # Perform first refresh
-    try:
-        await coordinator.async_config_entry_first_refresh()
-    except UpdateFailed as e:
-        raise ConfigEntryNotReady(f"Failed to connect to Haylou watch: {e}") from e
+    # Attempt initial connection; failures are retried in the background.
+    await coordinator.async_config_entry_first_refresh()
 
     # Store coordinator and client in hass.data
     if DOMAIN not in hass.data:

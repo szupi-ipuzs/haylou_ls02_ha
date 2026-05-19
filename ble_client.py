@@ -12,6 +12,7 @@ from .helpers import HaylouTime, HaylouSteps
 from .const import (
     CMD_ID_FIRMWARE,
     CMD_ID_HBM_STATUS2,
+    CMD_ID_SLEEP_FETCH,
     CMD_ID_USER_INFO,
     SERVICE_1_UUID,
     SERVICE_2_UUID,
@@ -243,6 +244,15 @@ class HaylouBLEClient:
         """Request firmware version from watch."""
         cmd = bytes([CMD_ID_FIRMWARE])
         return await self.send_command_1(cmd)
+
+    async def request_sleep(self) -> bool:
+        """Request sleep data from watch."""
+        current_time = HaylouTime.from_datetime(datetime.now())
+        current_time.hour = 0
+        current_time.minute = 0
+        current_time.second = 0
+        cmd = bytes([CMD_ID_SLEEP_FETCH, 0x01]) + current_time.to_payload()[:5]
+        return await self.send_command_2(cmd)
 
     async def send_message(
         self, message: str, msg_type: str = "generic"
@@ -491,6 +501,9 @@ class HaylouBLEClient:
             await asyncio.sleep(0.5)
 
             await self.request_heartrate()
+            await asyncio.sleep(0.5)
+
+            await self.request_sleep()
             await asyncio.sleep(0.5)
 
             _LOGGER.info("Watch initialization completed")
