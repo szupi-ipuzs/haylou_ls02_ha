@@ -110,6 +110,7 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             "hbm_stats": None,
             "sport_stats": None,
             "battery": None,
+            "sleep_periods": None,
             "last_ble_detected": None,  # Last time device was detected in BLE scan
         }
         self._reconnect_task: Optional[asyncio.Task] = None
@@ -449,6 +450,7 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         return NotificationCallbacks(
             on_general_n1=self._on_notification_general_n1,
             on_data2_n=self._on_notification_data2_n,
+            on_sleep_notify=self._on_notification_sleep_notify,
         )
 
     @callback
@@ -635,10 +637,23 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             self.async_set_updated_data(self.data)
             return
 
+        current_hr = self.ble_client.parse_hbm_current_general_n1(payload)
+        if current_hr is not None:
+            self.data["current_heart_rate"] = current_hr["bpm"]
+            self.async_set_updated_data(self.data)
+            return
+
         sport_stats = self.ble_client.parse_sport_statistics(payload)
         if sport_stats is not None:
             self.data["sport_stats"] = sport_stats
             self.async_set_updated_data(self.data)
+
+    def _on_notification_sleep_notify(self, payload: bytes) -> None:
+        """Handle incoming notification from CHAR_SLEEP_NOTIFY."""
+        self._note_ble_activity("sleep_notify", payload)
+
+        self.ble_client.parse_sleep_data(payload)
+
 
     def _on_notification_data2_n(self, payload: bytes) -> None:
         """Handle incoming notification from CHAR_DATA2_N."""
@@ -658,6 +673,14 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         current_hr = self.ble_client.parse_heartrate_data2_n(payload)
         if current_hr is not None:
             self.data["current_heart_rate"] = current_hr["bpm"]
+            self.async_set_updated_data(self.data)
+            return
+
+        self.ble_client.parse_sleep_init_frame(payload)
+
+        sleep_periods = self.ble_client.parse_sleep_end_frame(payload)
+        if sleep_periods is not None:
+            self.data["sleep_periods"] = sleep_periods
             self.async_set_updated_data(self.data)
             return
 

@@ -7,11 +7,12 @@ from typing import Callable, Optional
 from datetime import datetime, timezone
 
 from homeassistant.core import HomeAssistant
-from .helpers import HaylouTime, HaylouSteps
+from .helpers import HaylouSleep, HaylouTime, HaylouSteps
 
 from .const import (
     CMD_ID_FIRMWARE,
     CMD_ID_HBM_STATUS2,
+    CMD_ID_SLEEP_DATA,
     CMD_ID_SLEEP_FETCH,
     CMD_ID_USER_INFO,
     SERVICE_1_UUID,
@@ -20,6 +21,7 @@ from .const import (
     CHAR_DATA2_RW_UUID,
     CHAR_GENERAL_N_1_UUID,
     CHAR_DATA2_N_UUID,
+    CHAR_SLEEP_NOTIFY_UUID,
     CMD_ID_ALERT_MSG,
     CMD_ID_BATTERY,
     CMD_ID_HBM_STATISTICS,
@@ -32,6 +34,8 @@ from .const import (
     CMD_ID_SPORT_STATISTICS,
     CMD_ID_SPORT_STATISTICS2,
     ALERT_MSG_TYPES,
+    SLEEP_FETCH_SUBCMD_END,
+    SLEEP_FETCH_SUBCMD_INIT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,6 +52,7 @@ class NotificationCallbacks:
 
     on_general_n1: Callable[[bytes], None]
     on_data2_n: Callable[[bytes], None]
+    on_sleep_notify: Callable[[bytes], None]
 
 
 class HaylouBLEClient:
@@ -141,6 +146,9 @@ class HaylouBLEClient:
             await self._client.start_notify(
                 CHAR_DATA2_N_UUID, self._on_notification_data2
             )
+            await self._client.start_notify(
+                CHAR_SLEEP_NOTIFY_UUID, self._on_notification_sleep
+            )
             self._subscribed = True
             _LOGGER.debug("Subscribed to notifications")
             return True
@@ -152,7 +160,11 @@ class HaylouBLEClient:
         """Unsubscribe from watch notifications."""
         try:
             if self._client and self._subscribed:
-                for char_uuid in (CHAR_GENERAL_N_1_UUID, CHAR_DATA2_N_UUID):
+                for char_uuid in (
+                    CHAR_GENERAL_N_1_UUID,
+                    CHAR_DATA2_N_UUID,
+                    CHAR_SLEEP_NOTIFY_UUID,
+                ):
                     try:
                         await asyncio.wait_for(
                             self._client.stop_notify(char_uuid),
@@ -179,6 +191,11 @@ class HaylouBLEClient:
         """Handle incoming notification from CHAR_DATA2_N."""
         if self._notification_callbacks:
             self._notification_callbacks.on_data2_n(data)
+
+    def _on_notification_sleep(self, sender: int, data: bytes) -> None:
+        """Handle incoming notification from CHAR_SLEEP_NOTIFY."""
+        if self._notification_callbacks:
+            self._notification_callbacks.on_sleep_notify(data)
 
     async def send_command_1(self, cmd_data: bytes) -> bool:
         """Send a command to the watch via CHAR_GENERAL_RW_1."""
@@ -247,6 +264,7 @@ class HaylouBLEClient:
 
     async def request_sleep(self) -> bool:
         """Request sleep data from watch."""
+        self._sleep_handler = HaylouSleep()
         current_time = HaylouTime.from_datetime(datetime.now())
         current_time.hour = 0
         current_time.minute = 0
@@ -546,8 +564,21 @@ class HaylouBLEClient:
                     "bpm_max": bpm_max,
                 }
 
+            return None
+        except Exception as e:
+            _LOGGER.error("Error parsing HBM statistics (general N1): %s", e)
+            return None
+
+    def parse_hbm_current_general_n1(self, payload: bytes) -> Optional[dict]:
+        """Parse HBM statistics from CHAR_GENERAL_N_1 notification payload."""
+        try:
+            if len(payload) < 9 or payload[0] != CMD_ID_HBM_STATISTICS:
+                return None
+
+            stat_type = payload[1]
+
             if stat_type == 0x03:
-                timestamp = HaylouTime.from_payload(payload[2:7]).timestamp()
+                timestamp = HaylouTime.from_payload(payload[2:8]).timestamp()
                 bpm = payload[8]
 
                 return {
@@ -557,8 +588,9 @@ class HaylouBLEClient:
 
             return None
         except Exception as e:
-            _LOGGER.error("Error parsing HBM statistics (general N1): %s", e)
+            _LOGGER.error("Error parsing HBM current (general N1): %s", e)
             return None
+
 
     def parse_hbm_statistics_data2_n(self, payload: bytes) -> Optional[dict]:
         """Parse HBM statistics from CHAR_DATA2_N notification payload."""
@@ -713,3 +745,24 @@ class HaylouBLEClient:
         except Exception as e:
             _LOGGER.error("Error parsing firmware version: %s", e)
             return None
+
+    def parse_sleep_init_frame(self, payload: bytes):
+        """Parse sleep init frame from notification payload."""
+        if len(payload) < 2 or payload[0] != CMD_ID_SLEEP_FETCH or payload[1] != SLEEP_FETCH_SUBCMD_INIT or self._sleep_handler is None:
+            return None
+        self._sleep_handler.store_init_frame(payload)
+
+    def parse_sleep_data(self, payload: bytes):
+        """Parse sleep data from notification payload."""
+        if payload[0] != CMD_ID_SLEEP_DATA or self._sleep_handler is None:
+            return None
+        self._sleep_handler.store_data_frame(payload)
+
+    def parse_sleep_end_frame(self, payload: bytes) -> list[dict] | None:
+        """Parse sleep end frame from notification payload."""
+        if len(payload) < 2 or payload[0] != CMD_ID_SLEEP_FETCH or payload[1] != SLEEP_FETCH_SUBCMD_END or self._sleep_handler is None:
+            return None
+        self._sleep_handler.store_end_frame(payload)
+        sleep_periods = self._sleep_handler.parse()
+        self._sleep_handler = None
+        return sleep_periods

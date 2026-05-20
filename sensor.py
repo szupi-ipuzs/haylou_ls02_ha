@@ -1,6 +1,7 @@
 """Sensor for Haylou LS02 heart rate statistics."""
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -10,6 +11,7 @@ from homeassistant.const import (
     CONF_NAME,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import EntityCategory
@@ -298,6 +300,21 @@ async def async_setup_entry(
         HaylouStepsSensor(
             coordinator, device_address, device_name, config_entry
         ),
+        HaylouSleepSegmentsSensor(
+            coordinator, device_address, device_name, config_entry
+        ),
+        HaylouDeepSleepSensor(
+            coordinator, device_address, device_name, config_entry
+        ),
+        HaylouLightSleepSensor(
+            coordinator, device_address, device_name, config_entry
+        ),
+        HaylouSleepStartSensor(
+            coordinator, device_address, device_name, config_entry
+        ),
+        HaylouSleepEndSensor(
+            coordinator, device_address, device_name, config_entry
+        ),
     ]
     async_add_entities(entities)
 
@@ -467,6 +484,203 @@ class HaylouStepsSensor(HaylouSensorEntity):
             return sport_stats["steps_count"]
 
         return None
+
+
+class HaylouSleepSegmentsSensor(HaylouSensorEntity):
+    """Represent Haylou watch sleep segments as a duration sensor."""
+
+    _attr_icon = "mdi:sleep"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+
+    def __init__(
+        self,
+        coordinator,
+        device_address: str,
+        device_name: str,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, device_address, device_name, config_entry)
+        self._attr_unique_id = f"{DOMAIN}_{device_address}_sleep_segments"
+        self._attr_name = "Sleep Segments"
+
+    @property
+    def native_value(self) -> int:
+        """Return total sleep duration in minutes."""
+        periods = self.coordinator.data.get("sleep_periods")
+        if not periods:
+            return 0
+        return sum(period.get("duration", 0) for period in periods)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return individual sleep periods."""
+        periods = self.coordinator.data.get("sleep_periods")
+        if periods is None:
+            periods = []
+        return {"periods": periods}
+
+
+class HaylouSleepStartSensor(HaylouSensorEntity):
+    """Represent the start time of the first sleep period."""
+
+    _attr_icon = "mdi:sleep"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(
+        self,
+        coordinator,
+        device_address: str,
+        device_name: str,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, device_address, device_name, config_entry)
+        self._attr_unique_id = f"{DOMAIN}_{device_address}_sleep_start"
+        self._attr_name = "Sleep Start"
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the timestamp of the first sleep period, or unknown if unavailable."""
+        periods = self.coordinator.data.get("sleep_periods")
+        if not periods:
+            return None
+
+        start = periods[0].get("start")
+        if start is None:
+            return None
+
+        if isinstance(start, datetime):
+            return start
+
+        return datetime.fromtimestamp(start, tz=timezone.utc)
+
+
+class HaylouSleepEndSensor(HaylouSensorEntity):
+    """Represent the end time of the last sleep period."""
+
+    _attr_icon = "mdi:sleep"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(
+        self,
+        coordinator,
+        device_address: str,
+        device_name: str,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, device_address, device_name, config_entry)
+        self._attr_unique_id = f"{DOMAIN}_{device_address}_sleep_end"
+        self._attr_name = "Sleep End"
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return end of last sleep period, or unknown if unavailable."""
+        periods = self.coordinator.data.get("sleep_periods")
+        if not periods:
+            return None
+
+        last_period = periods[-1]
+        start = last_period.get("start")
+        if start is None:
+            return None
+
+        duration = timedelta(minutes=last_period.get("duration", 0))
+        if isinstance(start, datetime):
+            return start + duration
+
+        return datetime.fromtimestamp(start, tz=timezone.utc) + duration
+
+
+class HaylouSleepTypeSensor(HaylouSensorEntity):
+    """Base sensor for a single sleep stage (deep or light)."""
+
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+
+    def __init__(
+        self,
+        coordinator,
+        device_address: str,
+        device_name: str,
+        config_entry: ConfigEntry,
+        *,
+        sleep_type: str,
+        name: str,
+        unique_id_suffix: str,
+        icon: str,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, device_address, device_name, config_entry)
+        self._sleep_type = sleep_type
+        self._attr_unique_id = f"{DOMAIN}_{device_address}_{unique_id_suffix}"
+        self._attr_name = name
+        self._attr_icon = icon
+
+    def _filtered_periods(self) -> list[dict[str, Any]]:
+        """Return sleep periods matching this sensor's sleep type."""
+        periods = self.coordinator.data.get("sleep_periods")
+        if not periods:
+            return []
+        return [period for period in periods if period.get("type") == self._sleep_type]
+
+    @property
+    def native_value(self) -> int:
+        """Return total sleep duration in minutes for this sleep type."""
+        return sum(period.get("duration", 0) for period in self._filtered_periods())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return individual sleep periods for this sleep type."""
+        return {"periods": self._filtered_periods()}
+
+
+class HaylouDeepSleepSensor(HaylouSleepTypeSensor):
+    """Represent Haylou watch deep sleep as a duration sensor."""
+
+    def __init__(
+        self,
+        coordinator,
+        device_address: str,
+        device_name: str,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(
+            coordinator,
+            device_address,
+            device_name,
+            config_entry,
+            sleep_type="deep",
+            name="Deep Sleep",
+            unique_id_suffix="deep_sleep",
+            icon="mdi:sleep",
+        )
+
+
+class HaylouLightSleepSensor(HaylouSleepTypeSensor):
+    """Represent Haylou watch light sleep as a duration sensor."""
+
+    def __init__(
+        self,
+        coordinator,
+        device_address: str,
+        device_name: str,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(
+            coordinator,
+            device_address,
+            device_name,
+            config_entry,
+            sleep_type="light",
+            name="Light Sleep",
+            unique_id_suffix="light_sleep",
+            icon="mdi:sleep",
+        )
 
 
 class HaylouBatteryLevelSensor(HaylouSensorEntity):
