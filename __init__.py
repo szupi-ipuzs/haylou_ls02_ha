@@ -52,6 +52,12 @@ from .const import (
     SPORT_STATS2_END_MARKER,
     SPORT_STATS2_MAX_CONSECUTIVE_RETRIES,
     SPORT_STATS2_RETRY_TIMEOUT_SECONDS,
+    SLEEP_FETCH_SUBCMD_END,
+    SLEEP_FETCH_SUBCMD_INIT,
+    CMD_ID_SLEEP_DATA,
+    CMD_ID_SLEEP_FETCH,
+    SLEEP_SYNC_MAX_CONSECUTIVE_RETRIES,
+    SLEEP_SYNC_RETRY_TIMEOUT_SECONDS,
     TIME_FORMAT_12H,
     USER_GENDER_FEMALE,
 )
@@ -120,6 +126,10 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         self._sport_stats2_in_progress = False
         self._sport_stats2_retry_pending = False
         self._sport_stats2_consecutive_retries = 0
+        self._sleep_sync_timeout_task: Optional[asyncio.Task] = None
+        self._sleep_sync_in_progress = False
+        self._sleep_sync_retry_pending = False
+        self._sleep_sync_consecutive_retries = 0
         self._bluetooth_unsub = None
         self._cached_weather: dict[str, Any] | None = None
         self._last_presence_update_sent: datetime | None = None
@@ -554,12 +564,12 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             if self._sport_stats2_in_progress:
                 self._sport_stats2_in_progress = False
                 self._sport_stats2_timeout_task = None
-                await self._request_sport_stats_retry("timeout")
+                await self._request_sport_stats_retry()
         except asyncio.CancelledError:
             pass
 
-    async def _request_sport_stats_retry(self, reason: str) -> None:
-        """Request sport statistics again, guarding against duplicate retries."""
+    async def _request_sport_stats_retry(self) -> None:
+        """Re-request sport statistics after a burst times out without an end frame."""
         if self._sport_stats2_retry_pending:
             return
 
@@ -576,7 +586,10 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         self._sport_stats2_retry_pending = True
         try:
             self._sport_stats2_consecutive_retries += 1
-            _LOGGER.warning("Re-requesting sport statistics: %s", reason)
+            _LOGGER.warning(
+                "Re-requesting sport statistics after timeout (%ds)",
+                SPORT_STATS2_RETRY_TIMEOUT_SECONDS,
+            )
             self.ble_client.reset_steps_counter()
             if not await self.ble_client.request_sport_stats():
                 _LOGGER.warning("Failed to re-request sport statistics")
@@ -585,23 +598,86 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
 
     def _track_sport_stats2_burst(self, payload: bytes) -> None:
         """Track incomplete sport statistics 2 bursts on the N1 channel."""
-        if self._is_sport_stats2_payload(payload):
-            if self._is_sport_stats2_end_payload(payload):
-                self._cancel_sport_stats2_timeout(reset_retry_count=True)
-            else:
-                self._reset_sport_stats2_timeout()
+        if not self._is_sport_stats2_payload(payload):
             return
 
-        if self._sport_stats2_in_progress:
-            self._cancel_sport_stats2_timeout()
-            reason = (
-                f"interrupted by command 0x{payload[0]:02X}"
-                if payload
-                else "interrupted by empty payload"
+        if self._is_sport_stats2_end_payload(payload):
+            self._cancel_sport_stats2_timeout(reset_retry_count=True)
+        else:
+            self._reset_sport_stats2_timeout()
+
+    def _is_sleep_init_frame(self, payload: bytes) -> bool:
+        """Return True if this is a sleep sync init frame (0x1D 0x01)."""
+        return (
+            len(payload) >= 2
+            and payload[0] == CMD_ID_SLEEP_FETCH
+            and payload[1] == SLEEP_FETCH_SUBCMD_INIT
+        )
+
+    def _is_sleep_end_frame(self, payload: bytes) -> bool:
+        """Return True if this is a sleep sync end frame (0x1D 0x02)."""
+        return (
+            len(payload) >= 2
+            and payload[0] == CMD_ID_SLEEP_FETCH
+            and payload[1] == SLEEP_FETCH_SUBCMD_END
+        )
+
+    def _is_sleep_data_frame(self, payload: bytes) -> bool:
+        """Return True if this is a sleep segment data frame (0x1E)."""
+        return bool(payload) and payload[0] == CMD_ID_SLEEP_DATA
+
+    def _reset_sleep_sync_timeout(self) -> None:
+        """Start or restart the missing sleep end-frame timeout."""
+        self._sleep_sync_in_progress = True
+        if self._sleep_sync_timeout_task and not self._sleep_sync_timeout_task.done():
+            self._sleep_sync_timeout_task.cancel()
+        self._sleep_sync_timeout_task = self.hass.async_create_task(
+            self._retry_sleep_sync_after_timeout()
+        )
+
+    def _cancel_sleep_sync_timeout(self, reset_retry_count: bool = False) -> None:
+        """Cancel pending sleep sync retry state."""
+        self._sleep_sync_in_progress = False
+        if reset_retry_count:
+            self._sleep_sync_consecutive_retries = 0
+        if self._sleep_sync_timeout_task and not self._sleep_sync_timeout_task.done():
+            self._sleep_sync_timeout_task.cancel()
+        self._sleep_sync_timeout_task = None
+
+    async def _retry_sleep_sync_after_timeout(self) -> None:
+        """Re-request sleep data if the sync does not end in time."""
+        try:
+            await asyncio.sleep(SLEEP_SYNC_RETRY_TIMEOUT_SECONDS)
+            if self._sleep_sync_in_progress:
+                self._sleep_sync_in_progress = False
+                self._sleep_sync_timeout_task = None
+                await self._request_sleep_sync_retry()
+        except asyncio.CancelledError:
+            pass
+
+    async def _request_sleep_sync_retry(self) -> None:
+        """Re-request sleep data after a sync times out without an end frame."""
+        if self._sleep_sync_retry_pending:
+            return
+
+        if self._sleep_sync_consecutive_retries >= SLEEP_SYNC_MAX_CONSECUTIVE_RETRIES:
+            _LOGGER.warning(
+                "Not re-requesting sleep data after %d consecutive retries",
+                self._sleep_sync_consecutive_retries,
             )
-            self.hass.async_create_task(
-                self._request_sport_stats_retry(reason)
+            return
+
+        self._sleep_sync_retry_pending = True
+        try:
+            self._sleep_sync_consecutive_retries += 1
+            _LOGGER.warning(
+                "Re-requesting sleep data after timeout (%ds)",
+                SLEEP_SYNC_RETRY_TIMEOUT_SECONDS,
             )
+            if not await self.ble_client.request_sleep():
+                _LOGGER.warning("Failed to re-request sleep data")
+        finally:
+            self._sleep_sync_retry_pending = False
 
     def _on_notification_general_n1(self, payload: bytes) -> None:
         """Handle incoming notification from CHAR_GENERAL_N_1."""
@@ -652,8 +728,9 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
         """Handle incoming notification from CHAR_SLEEP_NOTIFY."""
         self._note_ble_activity("sleep_notify", payload)
 
-        self.ble_client.parse_sleep_data(payload)
-
+        if self._is_sleep_data_frame(payload):
+            self.ble_client.parse_sleep_data(payload)
+            self._reset_sleep_sync_timeout()
 
     def _on_notification_data2_n(self, payload: bytes) -> None:
         """Handle incoming notification from CHAR_DATA2_N."""
@@ -676,12 +753,17 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             self.async_set_updated_data(self.data)
             return
 
-        self.ble_client.parse_sleep_init_frame(payload)
+        if self._is_sleep_init_frame(payload):
+            self.ble_client.parse_sleep_init_frame(payload)
+            self._reset_sleep_sync_timeout()
+            return
 
-        sleep_periods = self.ble_client.parse_sleep_end_frame(payload)
-        if sleep_periods is not None:
-            self.data["sleep_periods"] = sleep_periods
-            self.async_set_updated_data(self.data)
+        if self._is_sleep_end_frame(payload):
+            sleep_periods = self.ble_client.parse_sleep_end_frame(payload)
+            self._cancel_sleep_sync_timeout(reset_retry_count=sleep_periods is not None)
+            if sleep_periods is not None:
+                self.data["sleep_periods"] = sleep_periods
+                self.async_set_updated_data(self.data)
             return
 
     async def _ensure_connected(self) -> None:
@@ -793,6 +875,13 @@ class HaylouUpdateCoordinator(DataUpdateCoordinator):
             except asyncio.CancelledError:
                 pass
             self._sport_stats2_timeout_task = None
+        if self._sleep_sync_timeout_task:
+            self._sleep_sync_timeout_task.cancel()
+            try:
+                await self._sleep_sync_timeout_task
+            except asyncio.CancelledError:
+                pass
+            self._sleep_sync_timeout_task = None
         if self._weather_task:
             self._weather_task.cancel()
             try:
@@ -816,6 +905,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Initialize coordinator
     ble_client = HaylouBLEClient(hass, entry.data[CONF_DEVICE_ADDRESS])
     coordinator = HaylouUpdateCoordinator(hass, ble_client, entry)
+    ble_client.set_sleep_sync_started_callback(coordinator._reset_sleep_sync_timeout)
 
     # Attempt initial connection; failures are retried in the background.
     await coordinator.async_config_entry_first_refresh()

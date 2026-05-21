@@ -4,6 +4,8 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Callable, Optional
+
+SleepSyncStartedCallback = Callable[[], None]
 from datetime import datetime, timezone
 
 from homeassistant.core import HomeAssistant
@@ -72,10 +74,17 @@ class HaylouBLEClient:
         self._notification_callbacks: Optional[NotificationCallbacks] = None
         self._subscribed = False
         self._steps_counter = HaylouSteps()
+        self._sleep_sync_started_callback: SleepSyncStartedCallback | None = None
 
     def reset_steps_counter(self) -> None:
         """Reset step aggregation state before requesting a fresh full sync."""
         self._steps_counter.start_adding_stored()
+
+    def set_sleep_sync_started_callback(
+        self, callback: SleepSyncStartedCallback | None
+    ) -> None:
+        """Register a callback invoked when a sleep sync request is sent."""
+        self._sleep_sync_started_callback = callback
 
     def is_connected(self) -> bool:
         """Check if currently connected to the watch."""
@@ -271,7 +280,10 @@ class HaylouBLEClient:
         current_time.minute = 0
         current_time.second = 0
         cmd = bytes([CMD_ID_SLEEP_FETCH, 0x01]) + current_time.to_payload()[:5]
-        return await self.send_command_2(cmd)
+        success = await self.send_command_2(cmd)
+        if success and self._sleep_sync_started_callback is not None:
+            self._sleep_sync_started_callback()
+        return success
 
     async def send_message(
         self, message: str, msg_type: str = "generic"
