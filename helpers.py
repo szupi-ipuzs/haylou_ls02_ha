@@ -1,8 +1,11 @@
 """Helper classes for the Haylou Watch"""
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
+from enum import Enum
 from typing import Any
+
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CMD_ID_SLEEP_DATA,
@@ -27,13 +30,15 @@ class HaylouTime:
 
     @staticmethod
     def from_datetime(ts: datetime) -> HaylouTime:
+        """Build HaylouTime from a datetime using the Home Assistant local timezone."""
+        local = dt_util.as_local(ts)
         result = HaylouTime()
-        result.year = ts.year & 0xFFFF
-        result.month = ts.month & 0xFF
-        result.day = ts.day & 0xFF
-        result.hour = ts.hour & 0xFF
-        result.minute = ts.minute & 0xFF
-        result.second = ts.second & 0xFF
+        result.year = local.year & 0xFFFF
+        result.month = local.month & 0xFF
+        result.day = local.day & 0xFF
+        result.hour = local.hour & 0xFF
+        result.minute = local.minute & 0xFF
+        result.second = local.second & 0xFF
         return result
 
     @staticmethod
@@ -69,14 +74,25 @@ class HaylouTime:
         return hash((self.year, self.month, self.day, self.hour, self.minute, self.second))
 
     def timestamp(self) -> datetime | None:
+        """Return naive wall-clock time as reported by the watch (no timezone)."""
         if self.year < 1 or self.month < 1 or self.day < 1:
             return None
 
         return datetime(
-            self.year, self.month, self.day,
-            self.hour, self.minute, self.second,
-            tzinfo=timezone.utc
+            self.year,
+            self.month,
+            self.day,
+            self.hour,
+            self.minute,
+            self.second,
         )
+
+    def timestamp_utc(self) -> datetime | None:
+        """Convert watch wall-clock time to UTC for Home Assistant."""
+        naive = self.timestamp()
+        if naive is None:
+            return None
+        return dt_util.as_utc(dt_util.as_local(naive))
 
     def is_same_day(self, other: HaylouTime) -> bool:
         return self.year == other.year and self.month == other.month and self.day == other.day
@@ -122,17 +138,43 @@ class HaylouSteps:
         return total_steps_for_day
 
 
+class _ParserState:
+    AWAIT_NONDATA_FRAME = 0
+    AWAIT_DATA_FRAME = 1
+
+
+class HaylouSleepType(Enum):
+    """Sleep stage reported by the watch."""
+
+    DEEP = "deep"
+    LIGHT = "light"
+
+    @classmethod
+    def from_wire_byte(cls, value: int) -> "HaylouSleepType":
+        """Map the stage byte from a sleep data record."""
+        return cls.DEEP if value == 0x01 else cls.LIGHT
+
+
+class HaylouSleepPeriod:
+    """A single parsed sleep segment."""
+
+    def __init__(
+        self,
+        start: HaylouTime,
+        stage: HaylouSleepType,
+        duration: int,
+    ) -> None:
+        self.start = start
+        self.type = stage
+        self.duration = duration
+
+
 class HaylouSleep:
     """Accumulate and parse a Haylou sleep sync burst (init, data, end frames).
 
-    Frames arrive on two BLE notify characteristics:
-    - Init/end markers (0x1D) on the general data notify channel
-    - Segment data (0x1E) on the sleep notify channel
-
-    Each parsed period is a dict with:
-    - ``start``: UTC ``datetime`` when the segment began
-    - ``type``: ``"deep"`` or ``"light"``
-    - ``duration``: length in minutes (minimum 1)
+    The watch may send multiple init/data pairs before the final end marker.
+    Each exported period dict contains ``start`` (UTC datetime for HA), ``type``
+    (``deep`` or ``light``), and ``duration`` (minutes, minimum 1).
     """
 
     INIT_FRAME_LENGTH = 7
@@ -141,217 +183,242 @@ class HaylouSleep:
 
     def __init__(self) -> None:
         """Initialize an empty sleep sync session."""
-        self._init_frame: bytes | None = None
-        self._data_frame: bytes | None = None
-        self._end_frame: bytes | None = None
+        self._frames: list[bytes] = []
+        self._periods: list[HaylouSleepPeriod] = []
         _LOGGER.debug("HaylouSleep session started")
 
-    def store_init_frame(self, payload: bytes) -> None:
-        """Store the sleep sync init frame (0x1D 0x01 …)."""
-        self._init_frame = payload
+    def store_frame(self, payload: bytes) -> None:
+        """Store one sleep sync frame (header, data, or end)."""
+        self._frames.append(payload)
         _LOGGER.debug(
-            "Sleep init frame stored (%d bytes): %s",
+            "Sleep frame stored (%d bytes, total=%d): %s",
             len(payload),
+            len(self._frames),
             payload.hex(" "),
         )
 
-    def store_data_frame(self, payload: bytes) -> None:
-        """Store the sleep segment data frame (0x1E …)."""
-        self._data_frame = payload
-        _LOGGER.debug(
-            "Sleep data frame stored (%d bytes): %s",
-            len(payload),
-            payload.hex(" "),
-        )
+    def parse(self) -> bool:
+        """Parse all stored frames. Returns True only when a valid end frame is seen."""
+        _LOGGER.debug("Parsing sleep session (%d frame(s))", len(self._frames))
 
-    def store_end_frame(self, payload: bytes) -> None:
-        """Store the sleep sync end frame (0x1D 0x02)."""
-        self._end_frame = payload
-        _LOGGER.debug(
-            "Sleep end frame stored (%d bytes): %s",
-            len(payload),
-            payload.hex(" "),
-        )
+        if not self._frames:
+            _LOGGER.warning("Sleep parse aborted: no frames to parse")
+            return False
 
-    def parse(self) -> list[dict[str, Any]] | None:
-        """Parse accumulated frames into sleep periods.
+        state = _ParserState.AWAIT_NONDATA_FRAME
+        time_from_header: HaylouTime | None = None
+        number_of_periods_from_header = 0
+        saw_end_frame = False
 
-        Returns:
-            List of period dicts, an empty list when the watch reports zero
-            periods, or ``None`` when required frames are missing or invalid.
-        """
-        _LOGGER.debug(
-            "Parsing sleep session (init=%s, data=%s, end=%s)",
-            self._init_frame is not None,
-            self._data_frame is not None,
-            self._end_frame is not None,
-        )
+        for frame in self._frames:
+            if state == _ParserState.AWAIT_NONDATA_FRAME:
+                if self._is_header_frame(frame):
+                    parsed_header = self._parse_header_frame(frame)
+                    if parsed_header is None:
+                        _LOGGER.warning(
+                            "Sleep parse aborted: invalid header frame: %s",
+                            frame.hex(" "),
+                        )
+                        return False
 
-        if self._init_frame is None:
-            _LOGGER.warning("Sleep parse aborted: init frame missing")
-            return None
+                    time_from_header, number_of_periods_from_header = parsed_header
+                    header_ts = time_from_header.timestamp()
+                    _LOGGER.debug(
+                        "Sleep header: date=%s expected_periods=%d",
+                        header_ts,
+                        number_of_periods_from_header,
+                    )
+                    if number_of_periods_from_header > 0:
+                        state = _ParserState.AWAIT_DATA_FRAME
+                    continue
 
-        if self._end_frame is None:
+                if self._is_end_frame(frame):
+                    saw_end_frame = True
+                    _LOGGER.debug("Sleep end frame received")
+                    break
+
+                _LOGGER.warning(
+                    "Sleep parse aborted: unexpected frame while awaiting header/end: %s",
+                    frame.hex(" "),
+                )
+                return False
+
+            if state == _ParserState.AWAIT_DATA_FRAME:
+                if time_from_header is None:
+                    _LOGGER.warning("Sleep parse aborted: data frame before header")
+                    return False
+
+                if self._is_end_frame(frame):
+                    _LOGGER.warning(
+                        "Sleep end received before data frame (expected %d period(s))",
+                        number_of_periods_from_header,
+                    )
+                    saw_end_frame = True
+                    break
+
+                if self._is_header_frame(frame):
+                    _LOGGER.warning(
+                        "Sleep parse aborted: new header before data frame: %s",
+                        frame.hex(" "),
+                    )
+                    return False
+
+                parsed_periods = self._parse_data_frame(
+                    time_from_header,
+                    number_of_periods_from_header,
+                    frame,
+                )
+                if parsed_periods is None:
+                    _LOGGER.warning(
+                        "Sleep parse aborted: invalid data frame: %s",
+                        frame.hex(" "),
+                    )
+                    return False
+
+                self._periods.extend(parsed_periods)
+                self._log_period_batch(parsed_periods)
+                state = _ParserState.AWAIT_NONDATA_FRAME
+                time_from_header = None
+                number_of_periods_from_header = 0
+                continue
+
+            # Defensive: unknown state should never happen (no infinite loop).
+            _LOGGER.error("Sleep parse aborted: invalid parser state %s", state)
+            return False
+
+        if not saw_end_frame:
             _LOGGER.warning("Sleep parse aborted: end frame missing")
-            return None
-
-        if not self.is_end_frame_valid():
-            _LOGGER.warning(
-                "Sleep parse aborted: invalid end frame (len=%s, payload=%s)",
-                len(self._end_frame) if self._end_frame else 0,
-                self._end_frame.hex(" ") if self._end_frame else None,
-            )
-            return None
-
-        parsed_init = self._parse_init_frame()
-        if parsed_init is None:
-            _LOGGER.warning(
-                "Sleep parse aborted: invalid init frame (len=%s, payload=%s)",
-                len(self._init_frame),
-                self._init_frame.hex(" "),
-            )
-            return None
-
-        number_of_periods = parsed_init["number_of_periods"]
-        start_date: HaylouTime = parsed_init["start_date"]
-        _LOGGER.debug(
-            "Sleep init parsed: date=%s, expected_periods=%d",
-            start_date.timestamp(),
-            number_of_periods,
-        )
-
-        if number_of_periods == 0:
-            _LOGGER.info("Sleep sync completed with zero periods")
-            return []
-
-        periods = self._parse_data_frame(start_date, number_of_periods)
-        if periods is None:
-            _LOGGER.warning("Sleep parse aborted: data frame invalid or incomplete")
-            return None
+            return False
 
         deep_minutes = sum(
-            p["duration"] for p in periods if p.get("type") == "deep"
+            p.duration for p in self._periods if p.type == HaylouSleepType.DEEP
         )
         light_minutes = sum(
-            p["duration"] for p in periods if p.get("type") == "light"
+            p.duration for p in self._periods if p.type == HaylouSleepType.LIGHT
         )
         _LOGGER.info(
-            "Sleep sync parsed: %d period(s), deep=%d min, light=%d min, total=%d min",
-            len(periods),
+            "Sleep sync complete: %d period(s), deep=%d min, light=%d min, total=%d min",
+            len(self._periods),
             deep_minutes,
             light_minutes,
             deep_minutes + light_minutes,
+        )
+        return True
+
+    @staticmethod
+    def _copy_day(base: HaylouTime) -> HaylouTime:
+        """Copy year/month/day from a header date into a new HaylouTime."""
+        day = HaylouTime()
+        day.year = base.year
+        day.month = base.month
+        day.day = base.day
+        return day
+
+    def _log_period_batch(self, periods: list[HaylouSleepPeriod]) -> None:
+        """Log one parsed data chunk."""
+        deep_minutes = sum(
+            p.duration for p in periods if p.type == HaylouSleepType.DEEP
+        )
+        light_minutes = sum(
+            p.duration for p in periods if p.type == HaylouSleepType.LIGHT
+        )
+        _LOGGER.info(
+            "Sleep chunk parsed: %d period(s), deep=%d min, light=%d min",
+            len(periods),
+            deep_minutes,
+            light_minutes,
         )
         for index, period in enumerate(periods):
             _LOGGER.debug(
                 "  period[%d]: start=%s type=%s duration=%d min",
                 index,
-                period.get("start"),
-                period.get("type"),
-                period.get("duration"),
+                period.start.timestamp(),
+                period.type.value,
+                period.duration,
             )
-        return periods
 
-    def _parse_init_frame(self) -> dict[str, Any] | None:
-        """Parse the init frame into session date and expected period count."""
-        if len(self._init_frame) != self.INIT_FRAME_LENGTH:
-            _LOGGER.debug(
-                "Init frame length mismatch: expected %d, got %d",
-                self.INIT_FRAME_LENGTH,
-                len(self._init_frame),
-            )
-            return None
-
-        if self._init_frame[0] != CMD_ID_SLEEP_FETCH:
-            _LOGGER.debug(
-                "Init frame command mismatch: expected 0x%02X, got 0x%02X",
-                CMD_ID_SLEEP_FETCH,
-                self._init_frame[0],
-            )
-            return None
-
-        if self._init_frame[1] != SLEEP_FETCH_SUBCMD_INIT:
-            _LOGGER.debug(
-                "Init frame subcommand mismatch: expected 0x%02X, got 0x%02X",
-                SLEEP_FETCH_SUBCMD_INIT,
-                self._init_frame[1],
-            )
-            return None
-
-        return {
-            "start_date": HaylouTime.from_payload(self._init_frame[2:6]),
-            "number_of_periods": self._init_frame[6],
-        }
-
-    def is_end_frame_valid(self) -> bool:
-        """Return whether the stored end frame matches 0x1D 0x02."""
-        if self._end_frame is None:
-            return False
-
-        valid = (
-            len(self._end_frame) == self.END_FRAME_LENGTH
-            and self._end_frame[0] == CMD_ID_SLEEP_FETCH
-            and self._end_frame[1] == SLEEP_FETCH_SUBCMD_END
+    def _is_header_frame(self, payload: bytes) -> bool:
+        return (
+            len(payload) == self.INIT_FRAME_LENGTH
+            and payload[0] == CMD_ID_SLEEP_FETCH
+            and payload[1] == SLEEP_FETCH_SUBCMD_INIT
         )
-        if not valid:
-            _LOGGER.debug(
-                "End frame validation failed: len=%d payload=%s",
-                len(self._end_frame),
-                self._end_frame.hex(" "),
-            )
-        return valid
+
+    def _is_end_frame(self, payload: bytes) -> bool:
+        return (
+            len(payload) == self.END_FRAME_LENGTH
+            and payload[0] == CMD_ID_SLEEP_FETCH
+            and payload[1] == SLEEP_FETCH_SUBCMD_END
+        )
+
+    def _parse_header_frame(self, payload: bytes) -> tuple[HaylouTime, int] | None:
+        """Parse the header frame into session date and expected period count."""
+        if not self._is_header_frame(payload):
+            return None
+
+        return (
+            HaylouTime.from_payload(payload[2:6]),
+            payload[6],
+        )
 
     def _parse_data_frame(
-        self, start_date: HaylouTime, number_of_periods: int
-    ) -> list[dict[str, Any]] | None:
-        """Parse the 0x1E data frame into individual sleep periods."""
-        if self._data_frame is None:
-            _LOGGER.debug("Data frame missing")
-            return None
-
-        expected_length = 1 + number_of_periods * self.PERIOD_RECORD_SIZE
-        if len(self._data_frame) < expected_length:
+        self,
+        start_date: HaylouTime,
+        number_of_periods: int,
+        payload: bytes,
+    ) -> list[HaylouSleepPeriod] | None:
+        """Parse one 0x1E data frame into sleep periods."""
+        expected_length = 1 + self.PERIOD_RECORD_SIZE * number_of_periods
+        if len(payload) < expected_length:
             _LOGGER.debug(
                 "Data frame too short: need %d bytes, got %d",
                 expected_length,
-                len(self._data_frame),
+                len(payload),
             )
             return None
 
-        if self._data_frame[0] != CMD_ID_SLEEP_DATA:
+        if payload[0] != CMD_ID_SLEEP_DATA:
             _LOGGER.debug(
                 "Data frame command mismatch: expected 0x%02X, got 0x%02X",
                 CMD_ID_SLEEP_DATA,
-                self._data_frame[0],
+                payload[0],
             )
             return None
 
-        periods: list[dict[str, Any]] = []
-        for offset in range(1, len(self._data_frame), self.PERIOD_RECORD_SIZE):
-            period: dict[str, Any] = {}
-            start_date.hour = self._data_frame[offset]
-            start_date.minute = self._data_frame[offset + 1]
-            period["start"] = start_date.timestamp()
-            stage_byte = self._data_frame[offset + 2]
-            period["type"] = "deep" if stage_byte == 0x01 else "light"
-            # Duration is stored in the last byte; 0 means sub-minute (treat as 1).
-            raw_duration = self._data_frame[offset + 5]
-            period["duration"] = 1 if raw_duration == 0 else raw_duration
-            periods.append(period)
-            _LOGGER.debug(
-                "  raw period @%d: hour=%d min=%d stage=0x%02X duration=%d",
-                offset,
-                self._data_frame[offset],
-                self._data_frame[offset + 1],
-                stage_byte,
-                period["duration"],
-            )
+        periods: list[HaylouSleepPeriod] = []
+        for offset in range(1, expected_length, self.PERIOD_RECORD_SIZE):
+            period_start = self._copy_day(start_date)
+            period_start.hour = payload[offset]
+            period_start.minute = payload[offset + 1]
+            stage = HaylouSleepType.from_wire_byte(payload[offset + 2])
+            raw_duration = payload[offset + 5]
+            duration = 1 if raw_duration == 0 else raw_duration
+            periods.append(HaylouSleepPeriod(period_start, stage, duration))
 
         if len(periods) != number_of_periods:
             _LOGGER.warning(
-                "Period count mismatch: init expected %d, data frame yielded %d",
+                "Period count mismatch: header expected %d, parsed %d",
                 number_of_periods,
                 len(periods),
             )
 
         return periods
+
+    def get_periods_for_date(self, haylou_time: HaylouTime) -> list[dict[str, Any]]:
+        """Return period dicts whose start falls on the same calendar day."""
+        result: list[dict[str, Any]] = []
+        for period in self._periods:
+            if not period.start.is_same_day(haylou_time):
+                continue
+            start = period.start.timestamp_utc()
+            if start is None:
+                _LOGGER.warning("Skipping sleep period with invalid start time")
+                continue
+            result.append(
+                {
+                    "start": start,
+                    "type": period.type.value,
+                    "duration": period.duration,
+                }
+            )
+        return result

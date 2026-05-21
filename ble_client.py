@@ -7,6 +7,7 @@ from typing import Callable, Optional
 from datetime import datetime, timezone
 
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 from .helpers import HaylouSleep, HaylouTime, HaylouSteps
 
 from .const import (
@@ -265,7 +266,7 @@ class HaylouBLEClient:
     async def request_sleep(self) -> bool:
         """Request sleep data from watch."""
         self._sleep_handler = HaylouSleep()
-        current_time = HaylouTime.from_datetime(datetime.now())
+        current_time = HaylouTime.from_datetime(dt_util.now())
         current_time.hour = 0
         current_time.minute = 0
         current_time.second = 0
@@ -498,7 +499,7 @@ class HaylouBLEClient:
             await asyncio.sleep(0.2)
 
             # Set time
-            await self.set_time(datetime.now())
+            await self.set_time(dt_util.now())
             await asyncio.sleep(0.2)
 
             # Request battery status
@@ -664,7 +665,7 @@ class HaylouBLEClient:
             self._steps_counter.set_value_incremental(time, steps)
 
             return {
-                "steps_count": self._steps_counter.get_value(datetime.now())
+                "steps_count": self._steps_counter.get_value(dt_util.now())
             }
 
         except Exception as e:
@@ -680,12 +681,12 @@ class HaylouBLEClient:
                 self._steps_counter.add_value_stored(time, steps)
 
                 return {
-                    "steps_count": self._steps_counter.get_value(datetime.now())
+                    "steps_count": self._steps_counter.get_value(dt_util.now())
                 }
             elif (len(payload) == 3) and (payload[1] == 0xFD):
                 self._steps_counter.finish_adding_stored()
                 return {
-                    "steps_count": self._steps_counter.get_value(datetime.now())
+                    "steps_count": self._steps_counter.get_value(dt_util.now())
                 }
             else:
                 return None
@@ -750,19 +751,29 @@ class HaylouBLEClient:
         """Parse sleep init frame from notification payload."""
         if len(payload) < 2 or payload[0] != CMD_ID_SLEEP_FETCH or payload[1] != SLEEP_FETCH_SUBCMD_INIT or self._sleep_handler is None:
             return None
-        self._sleep_handler.store_init_frame(payload)
+        self._sleep_handler.store_frame(payload)
 
     def parse_sleep_data(self, payload: bytes):
-        """Parse sleep data from notification payload."""
-        if payload[0] != CMD_ID_SLEEP_DATA or self._sleep_handler is None:
+        """Store sleep data frame from notification payload."""
+        if (
+            self._sleep_handler is None
+            or not payload
+            or payload[0] != CMD_ID_SLEEP_DATA
+        ):
             return None
-        self._sleep_handler.store_data_frame(payload)
+        self._sleep_handler.store_frame(payload)
 
     def parse_sleep_end_frame(self, payload: bytes) -> list[dict] | None:
         """Parse sleep end frame from notification payload."""
         if len(payload) < 2 or payload[0] != CMD_ID_SLEEP_FETCH or payload[1] != SLEEP_FETCH_SUBCMD_END or self._sleep_handler is None:
             return None
-        self._sleep_handler.store_end_frame(payload)
-        sleep_periods = self._sleep_handler.parse()
+        self._sleep_handler.store_frame(payload)
+        if self._sleep_handler.parse():
+            sleep_periods = self._sleep_handler.get_periods_for_date(
+                HaylouTime.from_datetime(dt_util.now())
+            )
+            self._sleep_handler = None
+            return sleep_periods
+        
         self._sleep_handler = None
-        return sleep_periods
+        return None
