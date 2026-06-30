@@ -781,9 +781,7 @@ class HaylouBLEClient:
             return None
         self._sleep_handler.store_frame(payload)
         if self._sleep_handler.parse():
-            sleep_periods = self._sleep_handler.get_periods_for_date(
-                HaylouTime.from_datetime(dt_util.now())
-            )
+            sleep_periods = self._sleep_handler.get_periods_for_date()
             self._sleep_handler = None
             return sleep_periods
         

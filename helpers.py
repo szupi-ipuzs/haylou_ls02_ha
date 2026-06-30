@@ -404,11 +404,13 @@ class HaylouSleep:
 
         return periods
 
-    def get_periods_for_date(self, haylou_time: HaylouTime) -> list[dict[str, Any]]:
-        """Return period dicts whose start falls on the same calendar day."""
+    def get_periods_for_date(
+        self, haylou_time: HaylouTime | None = None
+    ) -> list[dict[str, Any]]:
+        """Return period dicts, optionally filtered to a calendar day."""
         result: list[dict[str, Any]] = []
         for period in self._periods:
-            if not period.start.is_same_day(haylou_time):
+            if haylou_time is not None and not period.start.is_same_day(haylou_time):
                 continue
             start = period.start.timestamp_utc()
             if start is None:

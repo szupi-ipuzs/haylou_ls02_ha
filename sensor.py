@@ -300,6 +300,9 @@ async def async_setup_entry(
         HaylouStepsSensor(
             coordinator, device_address, device_name, config_entry
         ),
+        HaylouLastSleepSensor(
+            coordinator, device_address, device_name, config_entry
+        ),
         HaylouSleepSegmentsSensor(
             coordinator, device_address, device_name, config_entry
         ),
@@ -486,12 +489,39 @@ class HaylouStepsSensor(HaylouSensorEntity):
         return None
 
 
-class HaylouSleepSegmentsSensor(HaylouSensorEntity):
-    """Represent Haylou watch sleep segments as a duration sensor."""
+class HaylouLastSleepSensor(HaylouSensorEntity):
+    """Represent total duration of the last sleep session."""
 
     _attr_icon = "mdi:sleep"
     _attr_device_class = SensorDeviceClass.DURATION
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+
+    def __init__(
+        self,
+        coordinator,
+        device_address: str,
+        device_name: str,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, device_address, device_name, config_entry)
+        self._attr_unique_id = f"{DOMAIN}_{device_address}_last_sleep"
+        self._attr_name = "Last Sleep"
+
+    @property
+    def native_value(self) -> int:
+        """Return total sleep duration in minutes."""
+        periods = self.coordinator.data.get("sleep_periods")
+        if not periods:
+            return 0
+        return sum(period.get("duration", 0) for period in periods)
+
+
+class HaylouSleepSegmentsSensor(HaylouSensorEntity):
+    """Represent the number of sleep periods with segment details in attributes."""
+
+    _attr_icon = "mdi:sleep"
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(
         self,
@@ -507,11 +537,11 @@ class HaylouSleepSegmentsSensor(HaylouSensorEntity):
 
     @property
     def native_value(self) -> int:
-        """Return total sleep duration in minutes."""
+        """Return the number of sleep periods."""
         periods = self.coordinator.data.get("sleep_periods")
         if not periods:
             return 0
-        return sum(period.get("duration", 0) for period in periods)
+        return len(periods)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

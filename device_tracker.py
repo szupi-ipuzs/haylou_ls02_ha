@@ -81,9 +81,10 @@ class HaylouDeviceTracker(CoordinatorEntity, TrackerEntity):
         if not self.coordinator or not self.coordinator.data:
             return False
 
-        if self.coordinator.data.get("connection_state") == "connected":
-            return True
-
+        # Some BLE stacks keep a "connected" state even when the device is already
+        # out of range and notifications stop. For presence tracking we require
+        # recent BLE activity (advertisements or notifications) regardless of
+        # the reported connection state.
         return self._was_recently_detected()
 
     def _was_recently_detected(self) -> bool:
