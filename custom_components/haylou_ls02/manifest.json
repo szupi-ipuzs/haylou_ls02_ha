@@ -9,10 +9,10 @@
       "local_name": "Haylou Smart Watch 2*"
     }
   ],
-  "documentation": "https://github.com/szupi/haylou_ls02_ha",
+  "documentation": "https://github.com/szupi-ipuzs/haylou_ls02_ha",
   "requirements": ["bleak_retry_connector>=2.4.0"],
   "version": "1.0.0",
-  "issue_tracker": "https://github.com/szupi/haylou_ls02_ha/issues",
+  "issue_tracker": "https://github.com/szupi-ipuzs/haylou_ls02_ha/issues",
   "iot_class": "local_polling",
   "platforms": ["device_tracker", "sensor", "select", "number"],
   "integration_type": "hub"

@@ -25,7 +25,7 @@ Requires Home Assistant **2026.5.0** or later.
 ### Via HACS (Recommended)
 
 1. Go to **HACS** → **Custom repositories**
-2. Add the repository URL: `https://github.com/szupi/haylou_ls02_ha`
+2. Add the repository URL: `https://github.com/szupi-ipuzs/haylou_ls02_ha`
 3. Select **Integration** as the category
 4. Click **Install**
 5. Restart Home Assistant
@@ -33,7 +33,7 @@ Requires Home Assistant **2026.5.0** or later.
 ### Manual Installation
 
 1. Download the latest release
-2. Copy the `haylou_ls02` folder to `<config>/custom_components/`
+2. Copy `custom_components/haylou_ls02` into your Home Assistant `<config>/custom_components/` directory
 3. Restart Home Assistant
 
 ## Configuration
@@ -175,4 +175,4 @@ See LICENSE file in the repository.
 
 ## Support
 
-For issues and feature requests, visit the [GitHub repository](https://github.com/szupi/haylou_ls02_ha).
+For issues and feature requests, visit the [GitHub repository](https://github.com/szupi-ipuzs/haylou_ls02_ha).

@@ -1,9 +1,9 @@
 {
   "name": "Haylou LS02 Watch Integration",
   "domains": ["haylou_ls02"],
-  "documentation": "https://github.com/szupi/haylou_ls02_ha",
+  "documentation": "https://github.com/szupi-ipuzs/haylou_ls02_ha",
   "homeassistant": "2026.5.0",
-  "issue_tracker": "https://github.com/szupi/haylou_ls02_ha/issues",
+  "issue_tracker": "https://github.com/szupi-ipuzs/haylou_ls02_ha/issues",
   "requirements": [],
   "hacs": "1.6.0",
   "version": "1.0.0"
